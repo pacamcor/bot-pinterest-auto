@@ -126,22 +126,6 @@ def obtener_producto_con_oferta():
         "oferta_info": "¡Oferta especial con descuento por tiempo limitado!"
     }
 
-def subir_imagen_a_host(url_origen):
-    """Descarga la imagen de Amazon y la sube a un servidor de imágenes libre para que Pinterest la acepte."""
-    try:
-        r_img = requests.get(url_origen, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        if r_img.status_code == 200:
-            resp_tmp = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": ("imagen.jpg", r_img.content, "image/jpeg")}, timeout=10)
-            if resp_tmp.status_code == 200:
-                tmp_url = resp_tmp.json().get("data", {}).get("url", "")
-                # Convertir enlace temporal a enlace directo descargable
-                direct_url = tmp_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                if direct_url.startswith("http"):
-                    return direct_url
-    except Exception as e:
-        print(f"Aviso en subida de imagen temporal: {e}")
-    return url_origen
-
 # 1. Obtener producto y generar enlace de afiliado con parámetros UTM
 prod = obtener_producto_con_oferta()
 tag = AMAZON_TAG.strip() if AMAZON_TAG else "tutienda-21"
@@ -238,21 +222,53 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Obtener URL directa pública de imagen
-imagen_final = subir_imagen_a_host(prod["imagen"])
-print(f"-> Imagen procesada para Pinterest: {imagen_final}")
+# 5. Descargar imagen y subirla al endpoint nativo de subida de Pinterest
+img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+img_bytes = requests.get(prod["imagen"], headers=img_headers, timeout=10).content
+
+upload_url = "https://www.pinterest.es/upload-image/"
+files = {"img": ("image.jpg", img_bytes, "image/jpeg")}
+upload_headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "X-CSRFToken": csrf_token,
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": f"https://www.pinterest.es/{USERNAME}/{BOARD_SLUG}/"
+}
+
+up_resp = session.post(upload_url, headers=upload_headers, files=files)
+image_signature = None
+
+try:
+    up_json = up_resp.json()
+    image_signature = up_json.get("image_url") or up_json.get("success") or up_json.get("data", {}).get("image_url")
+except Exception as e:
+    print(f"Aviso en parseo de subida nativa: {e}")
 
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
-payload_pin = {
-    "options": {
-        "board_id": str(board_id),
-        "image_url": imagen_final,
-        "title": titular,
-        "description": descripcion,
-        "link": link_afiliado
-    },
-    "context": {}
-}
+
+if image_signature:
+    payload_pin = {
+        "options": {
+            "board_id": str(board_id),
+            "image_url": image_signature,
+            "title": titular,
+            "description": descripcion,
+            "link": link_afiliado
+        },
+        "context": {}
+    }
+else:
+    # Si la subida directa devuelve respuesta estándar, enlaza el recurso directo de Amazon
+    payload_pin = {
+        "options": {
+            "board_id": str(board_id),
+            "image_url": prod["imagen"],
+            "title": titular,
+            "description": descripcion,
+            "link": link_afiliado
+        },
+        "context": {}
+    }
 
 resp = session.post(
     create_url, 
