@@ -2,8 +2,10 @@ name: Publicador Automático Pinterest
 
 on:
   schedule:
-    # Se ejecuta 3 veces al día: 09:00, 15:00 y 21:00 (hora peninsular española)
-    - cron: '0 7,13,19 * * *'
+    # 07:00 UTC = 09:00 (España) y 13:00 UTC = 15:00 (España)
+    - cron: '0 7,13 * * *'
+    # 17:30 UTC = 19:30 (7:30 de la tarde en España)
+    - cron: '30 17 * * *'
   workflow_dispatch:
 
 jobs:
