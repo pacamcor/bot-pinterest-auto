@@ -2,7 +2,7 @@ import os
 import random
 import json
 import uuid
-import re
+import base64
 import requests
 from bs4 import BeautifulSoup
 from google import genai
@@ -16,17 +16,26 @@ USERNAME = "phantowncontact"
 BOARD_SLUG = "ofertas-top"
 
 TERMINOS_BUSQUEDA = [
-    "gadgets hogar utiles",
-    "accesorios escritorio setup",
-    "organizadores hogar",
-    "lampara led inteligente",
-    "freidora de aire accesorios",
-    "humificador difusor aromaterapia",
-    "soporte movil mesa"
+    "gadgets tecnologicos utiles",
+    "accesorios escritorio minimalista",
+    "soporte movil cargador inalambrico",
+    "auriculares cancelacion ruido ofertas",
+    "reloj inteligente deportivo",
+    "power bank carga rapida compacta",
+    "organizadores armario ropa",
+    "cajas organizadoras transparentes",
+    "estanteria modular cocina",
+    "dispensador jabon automatico sensor",
+    "accesorios freidora de aire cuadrados",
+    "picadora verduras manual multifuncion",
+    "tira led habitacion alexa",
+    "lampara mesa noche tactil calida",
+    "luces sensor movimiento armario",
+    "difusor aceites esenciales aromaterapia",
+    "humidificador ultrasonico habitacion"
 ]
 
 def obtener_producto_amazon():
-    """Busca productos activos reales directamente en Amazon España."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "es-ES,es;q=0.9",
@@ -52,7 +61,6 @@ def obtener_producto_amazon():
                 if not asin or len(asin) != 10:
                     continue
                 
-                # Obtener título e imagen
                 title_elem = item.find("h2")
                 img_elem = item.find("img", {"class": "s-image"})
                 
@@ -67,33 +75,18 @@ def obtener_producto_amazon():
                         })
             
             if validos:
-                elegido = random.choice(validos[:8])
-                return elegido
+                return random.choice(validos[:8])
         except Exception as e:
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    # Fallback con catálogo de ASINs verificados en Amazon España
-    catalogo_garantizado = [
-        {
-            "nombre": "Echo Pop Altavoz inteligente compacto con Alexa",
-            "asin": "B09WNK39JN",
-            "imagen": "https://m.media-amazon.com/images/I/61l6e5+U6LL._AC_SL1000_.jpg"
-        },
-        {
-            "nombre": "Fire TV Stick con mando por voz Alexa",
-            "asin": "B08C17VSS9",
-            "imagen": "https://m.media-amazon.com/images/I/51TjJOTfslL._AC_SL1000_.jpg"
-        },
-        {
-            "nombre": "Blink Mini Cámara de seguridad inteligente compacta",
-            "asin": "B07X37DT9M",
-            "imagen": "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
-        }
-    ]
-    return random.choice(catalogo_garantizado)
+    return {
+        "nombre": "Blink Mini Cámara de seguridad inteligente compacta",
+        "asin": "B07X37DT9M",
+        "imagen": "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
+    }
 
-# 1. Obtener producto real
+# 1. Extracción del producto
 prod = obtener_producto_amazon()
 tag = AMAZON_TAG.strip() if AMAZON_TAG else "tutienda-21"
 link_afiliado = f"https://www.amazon.es/dp/{prod['asin']}?tag={tag}"
@@ -141,7 +134,7 @@ for d in dominios:
     session.cookies.set("_auth", "1", domain=d)
     session.cookies.set("csrftoken", csrf_token, domain=d)
 
-headers = {
+base_headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Referer": f"https://www.pinterest.es/{USERNAME}/{BOARD_SLUG}/",
     "Origin": "https://www.pinterest.es",
@@ -159,7 +152,11 @@ board_payload = {
     "context": {}
 }
 
-board_resp = session.post(board_url, headers={**headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, data={"data": json.dumps(board_payload)})
+board_resp = session.post(
+    board_url, 
+    headers={**base_headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, 
+    data={"data": json.dumps(board_payload)}
+)
 board_id = None
 
 try:
@@ -171,29 +168,20 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Descargar y subir imagen como archivo directo a Pinterest
+# 5. Descargar imagen y convertir a data URI base64
 img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-img_data = requests.get(prod["imagen"], headers=img_headers, timeout=10).content
+img_bytes = requests.get(prod["imagen"], headers=img_headers, timeout=10).content
+img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+image_data_uri = f"data:image/jpeg;base64,{img_base64}"
 
-upload_url = "https://www.pinterest.es/upload-image/"
-files = {"img": ("image.jpg", img_data, "image/jpeg")}
-upload_resp = session.post(upload_url, headers=headers, files=files)
-
-uploaded_image_url = None
-try:
-    upload_json = upload_resp.json()
-    uploaded_image_url = upload_json.get("image_url") or upload_json.get("success")
-except Exception:
-    pass
-
-final_image = uploaded_image_url if uploaded_image_url and isinstance(uploaded_image_url, str) else prod["imagen"]
-
-# 6. Publicar Pin con enlace de afiliado verificado
+# 6. Intentar registrar la imagen en Pinterest o usar payload directo
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
-payload = {
+
+# Intentar payload con objeto de imagen local
+payload_pin = {
     "options": {
         "board_id": str(board_id),
-        "image_url": final_image,
+        "image_url": image_data_uri,
         "title": titular,
         "description": descripcion,
         "link": link_afiliado
@@ -201,16 +189,40 @@ payload = {
     "context": {}
 }
 
-resp = session.post(create_url, headers={**headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, data={"data": json.dumps(payload)})
+resp = session.post(
+    create_url, 
+    headers={**base_headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, 
+    data={"data": json.dumps(payload_pin)}
+)
+
+# Si el data URI no es aceptado directamente en image_url, usar el método de upload directo
+if resp.status_code != 200 or "resource_response" not in resp.json() or "data" not in resp.json().get("resource_response", {}):
+    files = {"img": ("pin.jpg", img_bytes, "image/jpeg")}
+    up_resp = session.post("https://www.pinterest.es/upload-image/", headers=base_headers, files=files)
+    
+    img_sig = None
+    try:
+        up_json = up_resp.json()
+        img_sig = up_json.get("image_url") or up_json.get("data", {}).get("image_url")
+    except Exception:
+        pass
+    
+    if img_sig:
+        payload_pin["options"]["image_url"] = img_sig
+        resp = session.post(
+            create_url, 
+            headers={**base_headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, 
+            data={"data": json.dumps(payload_pin)}
+        )
 
 try:
     resp_json = resp.json()
-    if "resource_response" in resp_json and "data" in resp_json["resource_response"]:
+    if "resource_response" in resp_json and "data" in resp_json["resource_response"] and resp_json["resource_response"]["data"]:
         pin_id = resp_json["resource_response"]["data"].get("id")
         print(f"¡ÉXITO TOTAL! Pin publicado con ID: {pin_id}")
         print(f"Ver Pin en: https://www.pinterest.es/pin/{pin_id}/")
     else:
-        print("Respuesta de Pinterest:")
+        print("Respuesta devuelta por Pinterest:")
         print(json.dumps(resp_json, indent=2))
         exit(1)
 except Exception:
