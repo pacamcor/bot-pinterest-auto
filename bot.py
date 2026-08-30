@@ -7,14 +7,11 @@ from google import genai
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 AMAZON_TAG = os.environ.get("AMAZON_TAG")
 AUTH_COOKIE = os.environ.get("PINTEREST_AUTH")
-CSRF_TOKEN = os.environ.get("PINTEREST_CSRF")
 
-# ID de tu tablero
 BOARD_ID = "1024920965106243873"
 
 client = genai.Client(api_key=GEMINI_KEY)
 
-# Catálogo de productos
 PRODUCTOS = [
     {
         "nombre": "Organizador de escritorio de madera multifuncional",
@@ -36,7 +33,6 @@ PRODUCTOS = [
 prod = random.choice(PRODUCTOS)
 link_afiliado = f"https://www.amazon.es/dp/{prod['asin']}?tag={AMAZON_TAG}"
 
-# 1. Generar contenido con Gemini
 prompt = f"""
 Crea para Pinterest sobre '{prod['nombre']}':
 1. Un titular persuasivo (máximo 6 palabras).
@@ -57,24 +53,32 @@ descripcion = res.split("DESCRIPCION:")[1].strip()
 print(f"-> Titular: {titular}")
 print(f"-> Enlace: {link_afiliado}")
 
-# 2. Configurar sesión de red con cookies
+# 1. Iniciar sesión HTTP con la cookie de autenticación
 session = requests.Session()
-for dom in [".pinterest.com", ".pinterest.es", "www.pinterest.com", "www.pinterest.es"]:
-    session.cookies.set("_pinterest_sess", AUTH_COOKIE, domain=dom)
-    session.cookies.set("_auth", "1", domain=dom)
-    if CSRF_TOKEN:
-        session.cookies.set("csrftoken", CSRF_TOKEN, domain=dom)
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Referer": "https://www.pinterest.com/",
+    "Origin": "https://www.pinterest.com"
+})
+
+session.cookies.set("_pinterest_sess", AUTH_COOKIE, domain=".pinterest.com")
+session.cookies.set("_auth", "1", domain=".pinterest.com")
+
+# 2. Obtener el token CSRF fresco del handshake de Pinterest
+init_resp = session.get("https://www.pinterest.com/")
+csrf_token = session.cookies.get("csrftoken", domain=".pinterest.com") or session.cookies.get("csrftoken")
+
+if not csrf_token:
+    csrf_token = "123456"
 
 headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Referer": "https://www.pinterest.com/",
-    "X-CSRFToken": CSRF_TOKEN or "123456",
+    "X-CSRFToken": csrf_token,
     "X-Requested-With": "XMLHttpRequest",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Origin": "https://www.pinterest.com"
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
 }
 
-# 3. Publicar Pin directo al tablero
+# 3. Publicar el Pin
 create_url = "https://www.pinterest.com/resource/PinResource/create/"
 payload = {
     "options": {
