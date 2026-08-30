@@ -124,7 +124,10 @@ def obtener_datos_exactos_producto(asin, nombre_sugerido, img_sugerida, headers)
             oferta_info = f"¡En oferta por solo {precio_actual}!"
 
         # Descargar y verificar imagen
-        img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        img_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Referer": "https://www.amazon.es/"
+        }
         r_img = requests.get(img_src, headers=img_headers, timeout=12)
         if r_img.status_code != 200 or len(r_img.content) < 3000:
             return None
@@ -171,7 +174,6 @@ def obtener_producto_con_imagen():
                 nombre_base = title_elem.text.strip() if title_elem else ""
                 img_base = img_elem.get("src", "") if img_elem else ""
                 
-                # Obtenemos los datos directos y oficiales de la ficha del producto
                 datos_reales = obtener_datos_exactos_producto(asin, nombre_base, img_base, headers)
                 if datos_reales:
                     return datos_reales
@@ -180,6 +182,7 @@ def obtener_producto_con_imagen():
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
+    # Fallback con descarga limpia
     fallback_url = "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
     fallback_bytes = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
     return {
@@ -286,14 +289,15 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Subida nativa del archivo binario a Pinterest
+# 5. Subida nativa de la imagen a Pinterest
 upload_url = "https://www.pinterest.es/upload-image/"
 files = {"img": ("image.jpg", prod["imagen_bytes"], "image/jpeg")}
 upload_headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "X-CSRFToken": csrf_token,
     "X-Requested-With": "XMLHttpRequest",
-    "Referer": f"https://www.pinterest.es/{USERNAME}/{BOARD_SLUG}/"
+    "Referer": "https://www.pinterest.es/pin-builder/",
+    "Origin": "https://www.pinterest.es"
 }
 
 up_resp = session.post(upload_url, headers=upload_headers, files=files)
@@ -301,9 +305,22 @@ image_signature = None
 
 try:
     up_json = up_resp.json()
-    image_signature = up_json.get("image_url") or up_json.get("success") or up_json.get("data", {}).get("image_url")
+    # Buscar claves estándar donde Pinterest entrega la URL subida
+    image_signature = (
+        up_json.get("image_url") 
+        or up_json.get("url") 
+        or up_json.get("success") 
+        or up_json.get("data", {}).get("image_url")
+        or up_json.get("resource_response", {}).get("data", {}).get("image_url")
+    )
+    if not image_signature and "i.pinimg.com" in up_resp.text:
+        match = re.search(r'https://i\.pinimg\.com/[^\s"\'<>]+', up_resp.text)
+        if match:
+            image_signature = match.group(0)
 except Exception as e:
     print(f"Aviso en parseo de subida nativa: {e}")
+
+print(f"-> URL de imagen procesada para Pin: {image_signature if image_signature else 'URL directa'}")
 
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
 
