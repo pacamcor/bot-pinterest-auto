@@ -95,22 +95,45 @@ def obtener_producto_con_oferta():
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
                 
-                descuento_texto = "¡En Oferta Flash!"
+                # 1. Extraer Porcentaje de Rebaja (ej. -25%)
                 badge_desc = item.find("span", string=re.compile(r'-\d+%'))
-                precio_elem = item.find("span", {"class": "a-offscreen"})
+                descuento_pct = badge_desc.text.strip() if badge_desc else ""
                 
-                if badge_desc and precio_elem and precio_elem.text:
-                    descuento_texto = f"¡Solo {precio_elem.text.strip()} ({badge_desc.text.strip()})!"
-                elif badge_desc:
-                    descuento_texto = f"¡Rebajado un {badge_desc.text.replace('-', '').strip()}!"
-                elif precio_elem and precio_elem.text:
-                    descuento_texto = f"¡Solo {precio_elem.text.strip()} en oferta!"
+                # 2. Extraer Precio Actual (Oferta)
+                precio_actual = ""
+                precio_actual_elem = item.find("span", {"class": "a-price"})
+                if precio_actual_elem:
+                    offscreen = precio_actual_elem.find("span", {"class": "a-offscreen"})
+                    if offscreen and offscreen.text:
+                        precio_actual = offscreen.text.strip()
+                
+                # 3. Extraer Precio Antiguo / Recomendado (Tachado)
+                precio_antiguo = ""
+                precio_tachado_elem = item.find("span", {"class": "a-text-price"})
+                if precio_tachado_elem:
+                    offscreen_old = precio_tachado_elem.find("span", {"class": "a-offscreen"})
+                    if offscreen_old and offscreen_old.text:
+                        precio_antiguo = offscreen_old.text.strip()
+                
+                # Construir frase de oferta atractiva
+                if precio_actual and precio_antiguo and descuento_pct:
+                    descuento_texto = f"¡Ahora {precio_actual}! (Antes {precio_antiguo} | {descuento_pct})"
+                elif precio_actual and precio_antiguo:
+                    descuento_texto = f"¡Ahora {precio_actual}! (Antes {precio_antiguo})"
+                elif precio_actual and descuento_pct:
+                    descuento_texto = f"¡Solo {precio_actual} ({descuento_pct} de descuento)!"
+                elif precio_actual:
+                    descuento_texto = f"¡En oferta por solo {precio_actual}!"
+                else:
+                    descuento_texto = "¡Oferta flash por tiempo limitado!"
                 
                 validos.append({
                     "nombre": nombre,
                     "asin": asin,
                     "imagen": img_src,
-                    "oferta_info": descuento_texto
+                    "oferta_info": descuento_texto,
+                    "precio_actual": precio_actual,
+                    "precio_antiguo": precio_antiguo
                 })
             
             if validos:
@@ -123,7 +146,9 @@ def obtener_producto_con_oferta():
         "nombre": "Blink Mini Cámara de seguridad inteligente compacta",
         "asin": "B07X37DT9M",
         "imagen": "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg",
-        "oferta_info": "¡Oferta especial con descuento por tiempo limitado!"
+        "oferta_info": "¡Ahora 22,99 €! (Antes 34,99 € | -34%)",
+        "precio_actual": "22,99 €",
+        "precio_antiguo": "34,99 €"
     }
 
 # 1. Obtener producto y generar enlace de afiliado con parámetros UTM
@@ -148,18 +173,18 @@ print(f"-> Enlace generado: {link_afiliado}")
 # 2. Generar textos persuasivos con Gemini 3.6 Flash
 prompt = f"""
 Eres un especialista en ventas y copywriting para Pinterest.
-Crea para el producto '{prod['nombre']}' (que tiene esta oferta: {prod['oferta_info']}):
+Crea para el producto '{prod['nombre']}' (que tiene esta oferta real de Amazon: {prod['oferta_info']}):
 
-1. TITULAR: Un título ultra llamativo con emojis que destaque la OFERTA o el ahorro (máximo 6 palabras).
-2. DESCRIPCION: Una descripción convincente que mencione la OFERTA ({prod['oferta_info']}), genere urgencia (tiempo limitado / unidades volando), incite a hacer clic en el enlace y termine con 4 hashtags virales de compras/ofertas (máximo 30 palabras).
+1. TITULAR: Un titular ultra llamativo con emojis destacando el precio de oferta (máximo 6 palabras).
+2. DESCRIPCION: Una descripción persuasiva que incluya exactamente la comparativa de precio '{prod['oferta_info']}', explique brevemente la utilidad del producto, genere urgencia (unidades limitadas/oferta flash) y termine con un CTA claro hacia el enlace y 4 hashtags virales (#ofertas #amazonfinds #rebajas #chollos). Máximo 32 palabras.
 
 Formato estricto:
 TITULAR: [tu titular]
 DESCRIPCION: [tu descripcion]
 """
 
-titular = f"🔥 {prod['oferta_info']} - {prod['nombre'][:30]}"
-descripcion = f"🚨 {prod['oferta_info']} {prod['nombre']}. Unidades limitadas. ¡Haz clic en el enlace para ver la oferta en Amazon antes de que termine! #ofertas #chollos #amazonfinds #rebajas"
+titular = f"🔥 {prod['oferta_info']} - {prod['nombre'][:25]}"
+descripcion = f"🚨 {prod['oferta_info']}. {prod['nombre']}. ¡Aprovecha la rebaja antes de que vuelva a su precio original! Clic en el enlace para ver en Amazon. #ofertas #chollos #amazonfinds #rebajas"
 
 try:
     client = genai.Client(api_key=GEMINI_KEY)
@@ -222,7 +247,7 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Descargar imagen y subirla al endpoint nativo de subida de Pinterest
+# 5. Descargar imagen y subirla al endpoint nativo de Pinterest
 img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 img_bytes = requests.get(prod["imagen"], headers=img_headers, timeout=10).content
 
@@ -246,29 +271,16 @@ except Exception as e:
 
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
 
-if image_signature:
-    payload_pin = {
-        "options": {
-            "board_id": str(board_id),
-            "image_url": image_signature,
-            "title": titular,
-            "description": descripcion,
-            "link": link_afiliado
-        },
-        "context": {}
-    }
-else:
-    # Si la subida directa devuelve respuesta estándar, enlaza el recurso directo de Amazon
-    payload_pin = {
-        "options": {
-            "board_id": str(board_id),
-            "image_url": prod["imagen"],
-            "title": titular,
-            "description": descripcion,
-            "link": link_afiliado
-        },
-        "context": {}
-    }
+payload_pin = {
+    "options": {
+        "board_id": str(board_id),
+        "image_url": image_signature if image_signature else prod["imagen"],
+        "title": titular,
+        "description": descripcion,
+        "link": link_afiliado
+    },
+    "context": {}
+}
 
 resp = session.post(
     create_url, 
