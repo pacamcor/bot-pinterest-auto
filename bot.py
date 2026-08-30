@@ -3,6 +3,7 @@ import random
 import json
 import uuid
 import re
+import time
 import requests
 from bs4 import BeautifulSoup
 from google import genai
@@ -17,47 +18,42 @@ BOARD_SLUG = "ofertas-top"
 
 TERMINOS_BUSQUEDA = [
     # Gadgets y Tecnología Viral
-    "gadgets tecnologicos utiles",
-    "accesorios escritorio minimalista",
-    "soporte movil cargador inalambrico",
-    "auriculares cancelacion ruido ofertas",
-    "reloj inteligente deportivo",
-    "power bank carga rapida compacta",
+    "gadgets tecnologicos utiles ofertas",
+    "accesorios escritorio minimalista rebajas",
+    "soporte movil cargador inalambrico oferta",
+    "auriculares cancelacion ruido ofertas flash",
+    "reloj inteligente deportivo rebajas",
+    "power bank carga rapida ofertas",
     
     # Hogar, Organización y Limpieza
-    "organizadores armario ropa",
-    "cajas organizadoras transparentes",
-    "estanteria modular cocina",
+    "organizadores armario ropa rebajas",
+    "cajas organizadoras transparentes oferta",
+    "estanteria modular cocina rebajas",
     "dispensador jabon automatico sensor",
-    "perchas magicas espacio armario",
-    "limpiador vapor portatil hogar",
+    "perchas magicas armario ofertas",
+    "limpiador vapor portatil ofertas",
     
     # Cocina y Gadgets Prácticos
-    "accesorios freidora de aire cuadrados",
-    "picadora verduras manual multifuncion",
+    "accesorios freidora de aire ofertas",
+    "picadora verduras manual oferta",
     "sellador bolsas termico portatil",
     "bascula digital cocina precision",
-    "dispensador agua electrico garrafa",
-    "recipientes hermeticos cristal cocina",
+    "recipientes hermeticos cristal oferta",
     
     # Iluminación y Setup
-    "tira led habitacion alexa",
-    "lampara de pie moderna inteligente",
-    "lampara mesa noche tactil calida",
+    "tira led alexa ofertas",
+    "lampara mesa noche tactil oferta",
     "luces sensor movimiento armario",
-    "alfombrilla escritorio xxl cuero",
-    "soporte monitor madera doble",
+    "alfombrilla escritorio xxl ofertas",
     
     # Confort y Bienestar
     "difusor aceites esenciales aromaterapia",
-    "humidificador ultrasonico habitacion",
-    "cojin ergonomico espuma memoria",
-    "antifaz para dormir con auriculares bluetooth",
-    "masajeador cervical cuello calor",
-    "calentador de tazas usb escritorio"
+    "humidificador habitacion oferta",
+    "cojin ergonomico memoria rebajas",
+    "masajeador cervical cuello calor oferta"
 ]
 
-def obtener_producto_con_oferta():
+def obtener_producto_con_imagen():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "es-ES,es;q=0.9",
@@ -70,14 +66,13 @@ def obtener_producto_con_oferta():
     for query in terminos:
         try:
             url = f"https://www.amazon.es/s?k={requests.utils.quote(query)}&s=exact-aware-popularity-rank&pct-off=10-"
-            r = requests.get(url, headers=headers, timeout=10)
+            r = requests.get(url, headers=headers, timeout=12)
             if r.status_code != 200:
                 continue
             
             soup = BeautifulSoup(r.text, "html.parser")
             items = soup.find_all("div", {"data-asin": True})
             
-            validos = []
             for item in items:
                 asin = item.get("data-asin", "").strip()
                 if not asin or len(asin) != 10:
@@ -95,64 +90,66 @@ def obtener_producto_con_oferta():
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
                 
-                # 1. Extraer Porcentaje de Rebaja (ej. -25%)
+                # 1. Extraer Precio Actual (Oferta)
+                precio_actual = ""
+                p_act_elem = item.find("span", {"class": "a-price"})
+                if p_act_elem:
+                    off_act = p_act_elem.find("span", {"class": "a-offscreen"})
+                    if off_act and off_act.text:
+                        precio_actual = off_act.text.strip()
+                
+                # 2. Extraer Precio Antiguo / Tachado
+                precio_antiguo = ""
+                p_old_elem = item.find("span", {"class": "a-text-price"}) or item.find("span", {"data-a-strike": "true"})
+                if p_old_elem:
+                    off_old = p_old_elem.find("span", {"class": "a-offscreen"})
+                    if off_old and off_old.text:
+                        precio_antiguo = off_old.text.strip()
+                
+                # 3. Extraer Porcentaje de Rebaja
                 badge_desc = item.find("span", string=re.compile(r'-\d+%'))
                 descuento_pct = badge_desc.text.strip() if badge_desc else ""
                 
-                # 2. Extraer Precio Actual (Oferta)
-                precio_actual = ""
-                precio_actual_elem = item.find("span", {"class": "a-price"})
-                if precio_actual_elem:
-                    offscreen = precio_actual_elem.find("span", {"class": "a-offscreen"})
-                    if offscreen and offscreen.text:
-                        precio_actual = offscreen.text.strip()
+                if not precio_actual:
+                    continue
                 
-                # 3. Extraer Precio Antiguo / Recomendado (Tachado)
-                precio_antiguo = ""
-                precio_tachado_elem = item.find("span", {"class": "a-text-price"})
-                if precio_tachado_elem:
-                    offscreen_old = precio_tachado_elem.find("span", {"class": "a-offscreen"})
-                    if offscreen_old and offscreen_old.text:
-                        precio_antiguo = offscreen_old.text.strip()
-                
-                # Construir frase de oferta atractiva
-                if precio_actual and precio_antiguo and descuento_pct:
-                    descuento_texto = f"¡Ahora {precio_actual}! (Antes {precio_antiguo} | {descuento_pct})"
-                elif precio_actual and precio_antiguo:
-                    descuento_texto = f"¡Ahora {precio_actual}! (Antes {precio_antiguo})"
-                elif precio_actual and descuento_pct:
-                    descuento_texto = f"¡Solo {precio_actual} ({descuento_pct} de descuento)!"
-                elif precio_actual:
-                    descuento_texto = f"¡En oferta por solo {precio_actual}!"
+                if precio_actual and precio_antiguo:
+                    if descuento_pct:
+                        oferta_info = f"¡Ahora {precio_actual}! (Antes {precio_antiguo} | {descuento_pct})"
+                    else:
+                        oferta_info = f"¡Ahora {precio_actual}! (Antes {precio_antiguo})"
                 else:
-                    descuento_texto = "¡Oferta flash por tiempo limitado!"
+                    oferta_info = f"¡En oferta por solo {precio_actual}!"
                 
-                validos.append({
-                    "nombre": nombre,
-                    "asin": asin,
-                    "imagen": img_src,
-                    "oferta_info": descuento_texto,
-                    "precio_actual": precio_actual,
-                    "precio_antiguo": precio_antiguo
-                })
-            
-            if validos:
-                return random.choice(validos[:5])
+                # Validar la descarga de la imagen real del producto antes de aceptarlo
+                img_bytes = None
+                img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                for intento in range(2):
+                    try:
+                        r_img = requests.get(img_src, headers=img_headers, timeout=15)
+                        if r_img.status_code == 200 and len(r_img.content) > 5000:
+                            img_bytes = r_img.content
+                            break
+                    except Exception:
+                        time.sleep(1)
+                
+                # Si la imagen se descargó correctamente, usamos este producto
+                if img_bytes:
+                    return {
+                        "nombre": nombre,
+                        "asin": asin,
+                        "imagen_bytes": img_bytes,
+                        "imagen_url": img_src,
+                        "oferta_info": oferta_info
+                    }
         except Exception as e:
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    return {
-        "nombre": "Blink Mini Cámara de seguridad inteligente compacta",
-        "asin": "B07X37DT9M",
-        "imagen": "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg",
-        "oferta_info": "¡Ahora 22,99 €! (Antes 34,99 € | -34%)",
-        "precio_actual": "22,99 €",
-        "precio_antiguo": "34,99 €"
-    }
+    raise RuntimeError("No se pudo obtener ningún producto con imagen válida.")
 
-# 1. Obtener producto y generar enlace de afiliado con parámetros UTM
-prod = obtener_producto_con_oferta()
+# 1. Obtener producto y validar su imagen real
+prod = obtener_producto_con_imagen()
 tag = AMAZON_TAG.strip() if AMAZON_TAG else "tutienda-21"
 
 link_afiliado = (
@@ -175,8 +172,8 @@ prompt = f"""
 Eres un especialista en ventas y copywriting para Pinterest.
 Crea para el producto '{prod['nombre']}' (que tiene esta oferta real de Amazon: {prod['oferta_info']}):
 
-1. TITULAR: Un titular ultra llamativo con emojis destacando el precio de oferta (máximo 6 palabras).
-2. DESCRIPCION: Una descripción persuasiva que incluya exactamente la comparativa de precio '{prod['oferta_info']}', explique brevemente la utilidad del producto, genere urgencia (unidades limitadas/oferta flash) y termine con un CTA claro hacia el enlace y 4 hashtags virales (#ofertas #amazonfinds #rebajas #chollos). Máximo 32 palabras.
+1. TITULAR: Un titular llamativo con emojis destacando la bajada de precio (ej: 🔥 {prod['oferta_info']}). Máximo 6 palabras.
+2. DESCRIPCION: Una descripción persuasiva que incluya exactamente la comparativa '{prod['oferta_info']}', explique para qué sirve el producto, genere urgencia (oferta por tiempo limitado) y termine con una llamada a la acción y 4 hashtags (#ofertas #rebajas #amazonfinds #chollos). Máximo 32 palabras.
 
 Formato estricto:
 TITULAR: [tu titular]
@@ -184,7 +181,7 @@ DESCRIPCION: [tu descripcion]
 """
 
 titular = f"🔥 {prod['oferta_info']} - {prod['nombre'][:25]}"
-descripcion = f"🚨 {prod['oferta_info']}. {prod['nombre']}. ¡Aprovecha la rebaja antes de que vuelva a su precio original! Clic en el enlace para ver en Amazon. #ofertas #chollos #amazonfinds #rebajas"
+descripcion = f"🚨 {prod['oferta_info']}. {prod['nombre']}. ¡Aprovecha la rebaja antes de que vuelva a su precio original! Haz clic en el enlace para ver en Amazon. #ofertas #rebajas #amazonfinds #chollos"
 
 try:
     client = genai.Client(api_key=GEMINI_KEY)
@@ -247,12 +244,9 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Descargar imagen y subirla al endpoint nativo de Pinterest
-img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-img_bytes = requests.get(prod["imagen"], headers=img_headers, timeout=10).content
-
+# 5. Subida nativa del archivo binario a Pinterest
 upload_url = "https://www.pinterest.es/upload-image/"
-files = {"img": ("image.jpg", img_bytes, "image/jpeg")}
+files = {"img": ("image.jpg", prod["imagen_bytes"], "image/jpeg")}
 upload_headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "X-CSRFToken": csrf_token,
@@ -274,7 +268,7 @@ create_url = "https://www.pinterest.es/resource/PinResource/create/"
 payload_pin = {
     "options": {
         "board_id": str(board_id),
-        "image_url": image_signature if image_signature else prod["imagen"],
+        "image_url": image_signature if image_signature else prod["imagen_url"],
         "title": titular,
         "description": descripcion,
         "link": link_afiliado
