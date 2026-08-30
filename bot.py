@@ -1,12 +1,14 @@
 import os
 import random
 import json
+import uuid
 import requests
 from google import genai
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 AMAZON_TAG = os.environ.get("AMAZON_TAG")
 AUTH_COOKIE = os.environ.get("PINTEREST_AUTH")
+CSRF_ENV = os.environ.get("PINTEREST_CSRF")
 
 BOARD_ID = "1024920965106243873"
 
@@ -53,32 +55,29 @@ descripcion = res.split("DESCRIPCION:")[1].strip()
 print(f"-> Titular: {titular}")
 print(f"-> Enlace: {link_afiliado}")
 
-# 1. Iniciar sesión HTTP con la cookie de autenticación
+# 1. Definir un token CSRF válido de 32 caracteres
+csrf_token = CSRF_ENV.strip() if CSRF_ENV else uuid.uuid4().hex
+
+# 2. Configurar la sesión inyectando el CSRF tanto en cookies como en headers
 session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Referer": "https://www.pinterest.com/",
-    "Origin": "https://www.pinterest.com"
-})
 
-session.cookies.set("_pinterest_sess", AUTH_COOKIE, domain=".pinterest.com")
-session.cookies.set("_auth", "1", domain=".pinterest.com")
-
-# 2. Obtener el token CSRF fresco del handshake de Pinterest
-init_resp = session.get("https://www.pinterest.com/")
-csrf_token = session.cookies.get("csrftoken", domain=".pinterest.com") or session.cookies.get("csrftoken")
-
-if not csrf_token:
-    csrf_token = "123456"
+dominios = [".pinterest.com", "www.pinterest.com", "pinterest.com", ".pinterest.es", "www.pinterest.es"]
+for d in dominios:
+    session.cookies.set("_pinterest_sess", AUTH_COOKIE, domain=d)
+    session.cookies.set("_auth", "1", domain=d)
+    session.cookies.set("csrftoken", csrf_token, domain=d)
 
 headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://www.pinterest.com/",
+    "Origin": "https://www.pinterest.com",
     "X-CSRFToken": csrf_token,
     "X-Requested-With": "XMLHttpRequest",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
 }
 
-# 3. Publicar el Pin
+# 3. Petición directa para crear el Pin
 create_url = "https://www.pinterest.com/resource/PinResource/create/"
 payload = {
     "options": {
