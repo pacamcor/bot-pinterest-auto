@@ -2,13 +2,13 @@ name: Publicador Automático Pinterest
 
 on:
   schedule:
-    - cron: '0 9,15,20 * * *'
+    # Se ejecuta 3 veces al día: 09:00, 15:00 y 21:00 (hora peninsular española)
+    - cron: '0 7,13,19 * * *'
   workflow_dispatch:
 
 jobs:
   publicar:
     runs-on: ubuntu-latest
-
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
 
       - name: Instalar librerías
         run: |
-          pip install google-genai requests
+          pip install requests google-genai beautifulsoup4
 
       - name: Ejecutar Bot Pinterest
         env:
