@@ -53,6 +53,93 @@ TERMINOS_BUSQUEDA = [
     "masajeador cervical cuello calor oferta"
 ]
 
+def obtener_datos_exactos_producto(asin, nombre_sugerido, img_sugerida, headers):
+    """Accede a la página individual del producto (DP) para sacar los precios 100% exactos"""
+    dp_url = f"https://www.amazon.es/dp/{asin}"
+    try:
+        r = requests.get(dp_url, headers=headers, timeout=12)
+        if r.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        # Título real
+        title_tag = soup.find("span", {"id": "productTitle"})
+        nombre = title_tag.text.strip() if title_tag else nombre_sugerido
+        
+        # Imagen de alta resolución
+        img_src = img_sugerida
+        landing_img = soup.find("img", {"id": "landingImage"})
+        if landing_img and landing_img.get("src"):
+            img_src = landing_img.get("src")
+        
+        # 1. Extraer Precio Actual exacto en ficha
+        precio_actual = ""
+        core_price = soup.find("div", {"id": "corePriceDisplay_desktop_feature_div"}) or soup.find("div", {"id": "corePrice_feature_div"})
+        if core_price:
+            p_actual_elem = core_price.find("span", {"class": "a-price"})
+            if p_actual_elem:
+                off = p_actual_elem.find("span", {"class": "a-offscreen"})
+                if off and off.text and "€" in off.text:
+                    precio_actual = off.text.strip()
+        
+        if not precio_actual:
+            for selector in ["#priceblock_ourprice", "#priceblock_dealprice", ".priceToPay span.a-offscreen"]:
+                elem = soup.select_one(selector)
+                if elem and elem.text and "€" in elem.text:
+                    precio_actual = elem.text.strip()
+                    break
+
+        # 2. Extraer Precio Antiguo (PVP Tachado) exacto en ficha
+        precio_antiguo = ""
+        if core_price:
+            p_old_elem = core_price.find("span", {"class": "a-text-price"}) or core_price.find("span", {"data-a-strike": "true"})
+            if p_old_elem:
+                off_old = p_old_elem.find("span", {"class": "a-offscreen"})
+                if off_old and off_old.text and "€" in off_old.text:
+                    precio_antiguo = off_old.text.strip()
+        
+        if not precio_antiguo:
+            for selector in [".basisPrice span.a-offscreen", "span[data-a-strike='true'] span.a-offscreen"]:
+                elem = soup.select_one(selector)
+                if elem and elem.text and "€" in elem.text:
+                    precio_antiguo = elem.text.strip()
+                    break
+
+        # 3. Extraer Porcentaje de Rebaja exacto
+        descuento_pct = ""
+        badge_elem = soup.select_one(".savingsPercentage") or soup.select_one("span.reinventPriceSavingsPercentageMargin")
+        if badge_elem and badge_elem.text:
+            descuento_pct = badge_elem.text.strip()
+
+        if not precio_actual:
+            return None
+
+        if precio_actual and precio_antiguo:
+            if descuento_pct:
+                oferta_info = f"¡Ahora {precio_actual}! (Antes {precio_antiguo} | {descuento_pct})"
+            else:
+                oferta_info = f"¡Ahora {precio_actual}! (Antes {precio_antiguo})"
+        else:
+            oferta_info = f"¡En oferta por solo {precio_actual}!"
+
+        # Descargar y verificar imagen
+        img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r_img = requests.get(img_src, headers=img_headers, timeout=12)
+        if r_img.status_code != 200 or len(r_img.content) < 3000:
+            return None
+
+        return {
+            "nombre": nombre,
+            "asin": asin,
+            "imagen_bytes": r_img.content,
+            "imagen_url": img_src,
+            "oferta_info": oferta_info
+        }
+    except Exception as e:
+        print(f"Aviso parseando ficha {asin}: {e}")
+        return None
+
 def obtener_producto_con_imagen():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -81,71 +168,14 @@ def obtener_producto_con_imagen():
                 title_elem = item.find("h2")
                 img_elem = item.find("img", {"class": "s-image"})
                 
-                if not title_elem or not img_elem:
-                    continue
+                nombre_base = title_elem.text.strip() if title_elem else ""
+                img_base = img_elem.get("src", "") if img_elem else ""
                 
-                nombre = title_elem.text.strip()
-                img_src = img_elem.get("src", "")
-                
-                if not img_src or "m.media-amazon.com" not in img_src:
-                    continue
-                
-                # 1. Extraer Precio Actual (Oferta Real)
-                precio_actual = ""
-                for p_tag in item.find_all("span", {"class": "a-price"}):
-                    clases = p_tag.get("class", [])
-                    if "a-text-price" in clases:
-                        continue
-                    off = p_tag.find("span", {"class": "a-offscreen"})
-                    if off and off.text and "€" in off.text:
-                        raw_txt = off.text.strip()
-                        if "/" not in raw_txt:
-                            precio_actual = raw_txt
-                            break
-                
-                # 2. Extraer Precio Antiguo / Tachado
-                precio_antiguo = ""
-                p_old_elem = item.find("span", {"class": "a-text-price"}) or item.find("span", {"data-a-strike": "true"})
-                if p_old_elem:
-                    off_old = p_old_elem.find("span", {"class": "a-offscreen"})
-                    if off_old and off_old.text and "€" in off_old.text:
-                        precio_antiguo = off_old.text.strip()
-                
-                # 3. Extraer Porcentaje de Rebaja
-                badge_desc = item.find("span", string=re.compile(r'-\d+%'))
-                descuento_pct = badge_desc.text.strip() if badge_desc else ""
-                
-                if not precio_actual:
-                    continue
-                
-                if precio_actual and precio_antiguo:
-                    if descuento_pct:
-                        oferta_info = f"¡Ahora {precio_actual}! (Antes {precio_antiguo} | {descuento_pct})"
-                    else:
-                        oferta_info = f"¡Ahora {precio_actual}! (Antes {precio_antiguo})"
-                else:
-                    oferta_info = f"¡En oferta por solo {precio_actual}!"
-                
-                # Validar la descarga de la imagen real
-                img_bytes = None
-                img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                for _ in range(2):
-                    try:
-                        r_img = requests.get(img_src, headers=img_headers, timeout=12)
-                        if r_img.status_code == 200 and len(r_img.content) > 3000:
-                            img_bytes = r_img.content
-                            break
-                    except Exception:
-                        time.sleep(1)
-                
-                if img_bytes:
-                    return {
-                        "nombre": nombre,
-                        "asin": asin,
-                        "imagen_bytes": img_bytes,
-                        "imagen_url": img_src,
-                        "oferta_info": oferta_info
-                    }
+                # Obtenemos los datos directos y oficiales de la ficha del producto
+                datos_reales = obtener_datos_exactos_producto(asin, nombre_base, img_base, headers)
+                if datos_reales:
+                    return datos_reales
+
         except Exception as e:
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
