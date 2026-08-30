@@ -4,8 +4,8 @@ on:
   schedule:
     # 07:00 UTC = 09:00 (España) y 13:00 UTC = 15:00 (España)
     - cron: '0 7,13 * * *'
-    # 17:30 UTC = 19:30 (7:30 de la tarde en España)
-    - cron: '30 17 * * *'
+    # 17:45 UTC = 19:45 (7:45 de la tarde en España)
+    - cron: '45 17 * * *'
   workflow_dispatch:
 
 jobs:
