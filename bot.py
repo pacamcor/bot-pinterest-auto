@@ -15,7 +15,6 @@ CSRF_ENV = os.environ.get("PINTEREST_CSRF")
 USERNAME = "phantowncontact"
 BOARD_SLUG = "ofertas-top"
 
-# Fuentes públicas de productos reales y chollos activos de Amazon España
 FEEDS = [
     "https://www.chollometro.com/rss/tendencias",
     "https://www.chollometro.com/rss/nuevos",
@@ -42,12 +41,10 @@ def obtener_producto_real():
                 title = item.find("title").text if item.find("title") is not None else ""
                 desc = item.find("description").text if item.find("description") is not None else ""
                 
-                # Detectar ASIN real de Amazon dentro del contenido
                 asin_match = re.search(r'amazon\.es/(?:dp|gp/product)/([A-Z0-9]{10})', desc + " " + title)
                 if not asin_match:
                     asin_match = re.search(r'\b([B0-9][A-Z0-9]{9})\b', desc)
                 
-                # Detectar imagen oficial del producto
                 img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc)
                 imagen_url = img_match.group(1) if img_match else None
                 
@@ -64,14 +61,13 @@ def obtener_producto_real():
             print(f"Aviso leyendo feed ({feed_url}): {e}")
             continue
 
-    # Respaldo con productos oficiales de alta demanda por si los feeds tardan en responder
     return {
         "nombre": "Echo Dot 5ª generación Altavoz inteligente con Alexa",
         "asin": "B09B8V1LZ3",
-        "imagen": "https://m.media-amazon.com/images/I/71C8O3T2ZEL._AC_SL1000_.jpg"
+        "imagen": "https://images.unsplash.com/photo-1543512214-318c7553f230?auto=format&fit=crop&w=800&q=80"
     }
 
-# 1. Obtener producto real de Amazon
+# 1. Obtener producto
 prod = obtener_producto_real()
 tag = AMAZON_TAG.strip() if AMAZON_TAG else "tutienda-21"
 link_afiliado = f"https://www.amazon.es/dp/{prod['asin']}?tag={tag}"
@@ -80,7 +76,7 @@ print(f"-> Producto detectado: {prod['nombre']}")
 print(f"-> ASIN real de Amazon: {prod['asin']}")
 print(f"-> Enlace generado: {link_afiliado}")
 
-# 2. Redacción persuasiva con Gemini 3.6 Flash
+# 2. Generar textos con Gemini
 prompt = f"""
 Crea para Pinterest sobre el producto '{prod['nombre']}':
 1. Un titular persuasivo (máximo 6 palabras).
@@ -109,7 +105,7 @@ except Exception as e:
 
 print(f"-> Titular final: {titular}")
 
-# 3. Sesión con Pinterest
+# 3. Sesión y autenticación
 csrf_token = CSRF_ENV.strip() if CSRF_ENV else uuid.uuid4().hex
 session = requests.Session()
 
@@ -124,9 +120,7 @@ headers = {
     "Referer": f"https://www.pinterest.es/{USERNAME}/{BOARD_SLUG}/",
     "Origin": "https://www.pinterest.es",
     "X-CSRFToken": csrf_token,
-    "X-Requested-With": "XMLHttpRequest",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+    "X-Requested-With": "XMLHttpRequest"
 }
 
 # 4. Obtener ID del tablero
@@ -139,7 +133,7 @@ board_payload = {
     "context": {}
 }
 
-board_resp = session.post(board_url, headers=headers, data={"data": json.dumps(board_payload)})
+board_resp = session.post(board_url, headers={**headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, data={"data": json.dumps(board_payload)})
 board_id = None
 
 try:
@@ -151,12 +145,30 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Publicar el Pin
+# 5. Descargar imagen y subirla como archivo a Pinterest
+img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+img_data = requests.get(prod["imagen"], headers=img_headers, timeout=10).content
+
+upload_url = "https://www.pinterest.es/upload-image/"
+files = {"img": ("image.jpg", img_data, "image/jpeg")}
+upload_resp = session.post(upload_url, headers=headers, files=files)
+
+uploaded_image_url = None
+try:
+    upload_json = upload_resp.json()
+    uploaded_image_url = upload_json.get("image_url") or upload_json.get("success")
+except Exception:
+    pass
+
+# Si no devolvió URL interna de carga, usar la URL directa de la imagen
+final_image = uploaded_image_url if uploaded_image_url and isinstance(uploaded_image_url, str) else prod["imagen"]
+
+# 6. Publicar Pin
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
 payload = {
     "options": {
         "board_id": str(board_id),
-        "image_url": prod["imagen"],
+        "image_url": final_image,
         "title": titular,
         "description": descripcion,
         "link": link_afiliado
@@ -164,7 +176,7 @@ payload = {
     "context": {}
 }
 
-resp = session.post(create_url, headers=headers, data={"data": json.dumps(payload)})
+resp = session.post(create_url, headers={**headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, data={"data": json.dumps(payload)})
 
 try:
     resp_json = resp.json()
