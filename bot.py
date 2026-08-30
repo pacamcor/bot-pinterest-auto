@@ -12,8 +12,6 @@ CSRF_ENV = os.environ.get("PINTEREST_CSRF")
 
 BOARD_ID = "1024920965106243873"
 
-client = genai.Client(api_key=GEMINI_KEY)
-
 PRODUCTOS = [
     {
         "nombre": "Organizador de escritorio de madera multifuncional",
@@ -44,21 +42,29 @@ TITULAR: [tu titular]
 DESCRIPCION: [tu descripcion]
 """
 
-response = client.models.generate_content(
-    model="gemini-3.6-flash",
-    contents=prompt,
-)
-res = response.text
-titular = res.split("TITULAR:")[1].split("DESCRIPCION:")[0].strip()
-descripcion = res.split("DESCRIPCION:")[1].strip()
+# Textos por defecto si hay saturación temporal en la API
+titular = prod["nombre"][:50]
+descripcion = f"Descubre {prod['nombre']}. La mejor opción en calidad y diseño para tu hogar. ¡Encuéntralo en Amazon! #hogar #ofertas"
 
-print(f"-> Titular: {titular}")
-print(f"-> Enlace: {link_afiliado}")
+try:
+    client = genai.Client(api_key=GEMINI_KEY)
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=prompt,
+    )
+    if response and response.text:
+        res = response.text
+        if "TITULAR:" in res and "DESCRIPCION:" in res:
+            titular = res.split("TITULAR:")[1].split("DESCRIPCION:")[0].strip()
+            descripcion = res.split("DESCRIPCION:")[1].strip()
+except Exception as e:
+    print(f"Aviso en llamada Gemini (usando texto de respaldo): {e}")
 
-# 1. Definir un token CSRF válido de 32 caracteres
+print(f"-> Titular final: {titular}")
+print(f"-> Enlace final: {link_afiliado}")
+
+# Inyección del token CSRF en cookies y cabeceras
 csrf_token = CSRF_ENV.strip() if CSRF_ENV else uuid.uuid4().hex
-
-# 2. Configurar la sesión inyectando el CSRF tanto en cookies como en headers
 session = requests.Session()
 
 dominios = [".pinterest.com", "www.pinterest.com", "pinterest.com", ".pinterest.es", "www.pinterest.es"]
@@ -77,7 +83,7 @@ headers = {
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
 }
 
-# 3. Petición directa para crear el Pin
+# Publicar el Pin en Pinterest
 create_url = "https://www.pinterest.com/resource/PinResource/create/"
 payload = {
     "options": {
@@ -96,10 +102,12 @@ try:
     resp_json = resp.json()
     if "resource_response" in resp_json and "data" in resp_json["resource_response"]:
         pin_id = resp_json["resource_response"]["data"].get("id")
-        print(f"¡ÉXITO TOTAL! Pin publicado en tu tablero con ID: {pin_id}")
+        print(f"¡ÉXITO TOTAL! Pin publicado con ID: {pin_id}")
         print(f"Ver Pin en: https://www.pinterest.com/pin/{pin_id}/")
     else:
-        print("Respuesta del servidor:")
+        print("Respuesta devuelta por Pinterest:")
         print(json.dumps(resp_json, indent=2))
+        exit(1)
 except Exception:
     print(f"Respuesta raw ({resp.status_code}): {resp.text[:300]}")
+    exit(1)
