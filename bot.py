@@ -31,18 +31,18 @@ PRODUCTOS = [
 prod = random.choice(PRODUCTOS)
 link_afiliado = f"https://www.amazon.es/dp/{prod['asin']}?tag={AMAZON_TAG}"
 
-# 1. Generar textos con IA
+# 1. Generar textos con el modelo actualizado
 prompt = f"""
 Crea para Pinterest sobre '{prod['nombre']}':
 1. Un titular llamativo (máximo 6 palabras).
 2. Una descripción persuasiva para compra con hashtags (máximo 25 palabras).
-Formato:
+Formato estricto:
 TITULAR: [tu titular]
 DESCRIPCION: [tu descripcion]
 """
 
 response = client.models.generate_content(
-    model="gemini-2.5-flash",
+    model="gemini-3.6-flash",
     contents=prompt,
 )
 res = response.text
