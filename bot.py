@@ -10,8 +10,6 @@ AMAZON_TAG = os.environ.get("AMAZON_TAG")
 AUTH_COOKIE = os.environ.get("PINTEREST_AUTH")
 CSRF_ENV = os.environ.get("PINTEREST_CSRF")
 
-BOARD_ID = "1024920965106243873"
-
 PRODUCTOS = [
     {
         "nombre": "Organizador de escritorio de madera multifuncional",
@@ -42,7 +40,7 @@ TITULAR: [tu titular]
 DESCRIPCION: [tu descripcion]
 """
 
-# Textos por defecto si hay saturación temporal en la API
+# Generación con Gemini 3.6 Flash + fallback de seguridad
 titular = prod["nombre"][:50]
 descripcion = f"Descubre {prod['nombre']}. La mejor opción en calidad y diseño para tu hogar. ¡Encuéntralo en Amazon! #hogar #ofertas"
 
@@ -63,7 +61,7 @@ except Exception as e:
 print(f"-> Titular final: {titular}")
 print(f"-> Enlace final: {link_afiliado}")
 
-# Inyección del token CSRF en cookies y cabeceras
+# Configuración de sesión y tokens
 csrf_token = CSRF_ENV.strip() if CSRF_ENV else uuid.uuid4().hex
 session = requests.Session()
 
@@ -83,11 +81,36 @@ headers = {
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
 }
 
-# Publicar el Pin en Pinterest
+# 1. Obtener automáticamente los tableros reales de la cuenta
+boards_url = "https://www.pinterest.com/resource/BoardsResource/get/"
+boards_payload = {
+    "options": {},
+    "context": {}
+}
+
+board_id = None
+try:
+    r = session.post(boards_url, headers=headers, data={"data": json.dumps(boards_payload)})
+    res_data = r.json()
+    boards_list = res_data.get("resource_response", {}).get("data", [])
+    if boards_list:
+        tablero = boards_list[0]
+        board_id = str(tablero.get("id"))
+        print(f"-> Tablero detectado con éxito: '{tablero.get('name')}' (ID: {board_id})")
+    else:
+        print("No se listaron tableros en la respuesta general. Intentando con tablero de respaldo...")
+except Exception as e:
+    print(f"Aviso al detectar tableros: {e}")
+
+if not board_id:
+    # Si la consulta dinámica no encuentra listas, usamos el fallback
+    board_id = "1024920965106243873"
+
+# 2. Publicar Pin
 create_url = "https://www.pinterest.com/resource/PinResource/create/"
 payload = {
     "options": {
-        "board_id": BOARD_ID,
+        "board_id": board_id,
         "image_url": prod["imagen"],
         "title": titular,
         "description": descripcion,
