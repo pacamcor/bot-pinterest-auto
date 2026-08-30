@@ -63,17 +63,15 @@ def obtener_datos_exactos_producto(asin, nombre_sugerido, img_sugerida, headers)
         
         soup = BeautifulSoup(r.text, "html.parser")
         
-        # Título real
         title_tag = soup.find("span", {"id": "productTitle"})
         nombre = title_tag.text.strip() if title_tag else nombre_sugerido
         
-        # Imagen de alta resolución
         img_src = img_sugerida
         landing_img = soup.find("img", {"id": "landingImage"})
         if landing_img and landing_img.get("src"):
             img_src = landing_img.get("src")
         
-        # 1. Extraer Precio Actual exacto en ficha
+        # 1. Extraer Precio Actual exacto
         precio_actual = ""
         core_price = soup.find("div", {"id": "corePriceDisplay_desktop_feature_div"}) or soup.find("div", {"id": "corePrice_feature_div"})
         if core_price:
@@ -90,7 +88,7 @@ def obtener_datos_exactos_producto(asin, nombre_sugerido, img_sugerida, headers)
                     precio_actual = elem.text.strip()
                     break
 
-        # 2. Extraer Precio Antiguo (PVP Tachado) exacto en ficha
+        # 2. Extraer Precio Antiguo (PVP Tachado) exacto
         precio_antiguo = ""
         if core_price:
             p_old_elem = core_price.find("span", {"class": "a-text-price"}) or core_price.find("span", {"data-a-strike": "true"})
@@ -123,7 +121,6 @@ def obtener_datos_exactos_producto(asin, nombre_sugerido, img_sugerida, headers)
         else:
             oferta_info = f"¡En oferta por solo {precio_actual}!"
 
-        # Descargar y verificar imagen
         img_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://www.amazon.es/"
@@ -182,7 +179,6 @@ def obtener_producto_con_imagen():
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    # Fallback con descarga limpia
     fallback_url = "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
     fallback_bytes = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
     return {
@@ -192,6 +188,49 @@ def obtener_producto_con_imagen():
         "imagen_url": fallback_url,
         "oferta_info": "¡Ahora 22,99 €! (Antes 34,99 € | -34%)"
     }
+
+def subir_imagen_segura(img_bytes, session, csrf_token):
+    """Sube la imagen a Pinterest directamente, o a un proxy CDN libre si Pinterest rechaza la subida web"""
+    # 1. Intentar subida nativa a Pinterest
+    try:
+        upload_url = "https://www.pinterest.es/upload-image/"
+        files = {"img": ("image.jpg", img_bytes, "image/jpeg")}
+        upload_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "X-CSRFToken": csrf_token,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://www.pinterest.es/pin-builder/"
+        }
+        up_resp = session.post(upload_url, headers=upload_headers, files=files, timeout=15)
+        if up_resp.status_code == 200:
+            if "i.pinimg.com" in up_resp.text:
+                match = re.search(r'https://i\.pinimg\.com/[^\s"\'<>]+', up_resp.text)
+                if match:
+                    return match.group(0)
+            up_json = up_resp.json()
+            sig = up_json.get("image_url") or up_json.get("url") or up_json.get("success")
+            if sig and str(sig).startswith("http"):
+                return sig
+    except Exception as e:
+        print(f"Aviso subida nativa Pinterest: {e}")
+
+    # 2. Respaldo en CDN público libre (para que Pinterest lo descargue sin bloqueo 403 de Amazon)
+    try:
+        r_cdn = requests.post(
+            "https://tmpfiles.org/api/v1/upload",
+            files={"file": ("imagen.jpg", img_bytes, "image/jpeg")},
+            timeout=15
+        )
+        if r_cdn.status_code == 200:
+            url_tmp = r_cdn.json().get("data", {}).get("url")
+            if url_tmp:
+                # Transformar a URL directa de descarga
+                url_directa = url_tmp.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                return url_directa
+    except Exception as e:
+        print(f"Aviso subida CDN alternativa: {e}")
+
+    return None
 
 # 1. Obtener producto y validar precio e imagen real
 prod = obtener_producto_con_imagen()
@@ -289,45 +328,19 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Subida nativa de la imagen a Pinterest
-upload_url = "https://www.pinterest.es/upload-image/"
-files = {"img": ("image.jpg", prod["imagen_bytes"], "image/jpeg")}
-upload_headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "X-CSRFToken": csrf_token,
-    "X-Requested-With": "XMLHttpRequest",
-    "Referer": "https://www.pinterest.es/pin-builder/",
-    "Origin": "https://www.pinterest.es"
-}
+# 5. Obtener URL de imagen válida para Pinterest
+image_final_url = subir_imagen_segura(prod["imagen_bytes"], session, csrf_token)
+if not image_final_url:
+    image_final_url = prod["imagen_url"]
 
-up_resp = session.post(upload_url, headers=upload_headers, files=files)
-image_signature = None
-
-try:
-    up_json = up_resp.json()
-    # Buscar claves estándar donde Pinterest entrega la URL subida
-    image_signature = (
-        up_json.get("image_url") 
-        or up_json.get("url") 
-        or up_json.get("success") 
-        or up_json.get("data", {}).get("image_url")
-        or up_json.get("resource_response", {}).get("data", {}).get("image_url")
-    )
-    if not image_signature and "i.pinimg.com" in up_resp.text:
-        match = re.search(r'https://i\.pinimg\.com/[^\s"\'<>]+', up_resp.text)
-        if match:
-            image_signature = match.group(0)
-except Exception as e:
-    print(f"Aviso en parseo de subida nativa: {e}")
-
-print(f"-> URL de imagen procesada para Pin: {image_signature if image_signature else 'URL directa'}")
+print(f"-> URL de imagen procesada para Pin: {image_final_url}")
 
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
 
 payload_pin = {
     "options": {
         "board_id": str(board_id),
-        "image_url": image_signature if image_signature else prod["imagen_url"],
+        "image_url": image_final_url,
         "title": titular,
         "description": descripcion,
         "link": link_afiliado
