@@ -10,6 +10,9 @@ AMAZON_TAG = os.environ.get("AMAZON_TAG")
 AUTH_COOKIE = os.environ.get("PINTEREST_AUTH")
 CSRF_ENV = os.environ.get("PINTEREST_CSRF")
 
+USERNAME = "phantowncontact"
+BOARD_SLUG = "ofertas-top"
+
 PRODUCTOS = [
     {
         "nombre": "Organizador de escritorio de madera multifuncional",
@@ -40,7 +43,7 @@ TITULAR: [tu titular]
 DESCRIPCION: [tu descripcion]
 """
 
-# Generación con Gemini 3.6 Flash + fallback de seguridad
+# Generación con Gemini 3.6 Flash + respaldo de seguridad
 titular = prod["nombre"][:50]
 descripcion = f"Descubre {prod['nombre']}. La mejor opción en calidad y diseño para tu hogar. ¡Encuéntralo en Amazon! #hogar #ofertas"
 
@@ -56,7 +59,7 @@ try:
             titular = res.split("TITULAR:")[1].split("DESCRIPCION:")[0].strip()
             descripcion = res.split("DESCRIPCION:")[1].strip()
 except Exception as e:
-    print(f"Aviso en llamada Gemini (usando texto de respaldo): {e}")
+    print(f"Aviso en llamada Gemini: {e}")
 
 print(f"-> Titular final: {titular}")
 print(f"-> Enlace final: {link_afiliado}")
@@ -65,7 +68,7 @@ print(f"-> Enlace final: {link_afiliado}")
 csrf_token = CSRF_ENV.strip() if CSRF_ENV else uuid.uuid4().hex
 session = requests.Session()
 
-dominios = [".pinterest.com", "www.pinterest.com", "pinterest.com", ".pinterest.es", "www.pinterest.es"]
+dominios = [".pinterest.com", "www.pinterest.com", "pinterest.com", ".pinterest.es", "www.pinterest.es", "es.pinterest.com"]
 for d in dominios:
     session.cookies.set("_pinterest_sess", AUTH_COOKIE, domain=d)
     session.cookies.set("_auth", "1", domain=d)
@@ -73,44 +76,47 @@ for d in dominios:
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Referer": "https://www.pinterest.com/",
-    "Origin": "https://www.pinterest.com",
+    "Referer": f"https://www.pinterest.es/{USERNAME}/{BOARD_SLUG}/",
+    "Origin": "https://www.pinterest.es",
     "X-CSRFToken": csrf_token,
     "X-Requested-With": "XMLHttpRequest",
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
 }
 
-# 1. Obtener automáticamente los tableros reales de la cuenta
-boards_url = "https://www.pinterest.com/resource/BoardsResource/get/"
-boards_payload = {
-    "options": {},
+# 1. Obtener el ID del tablero mediante username y slug
+board_url = "https://www.pinterest.es/resource/BoardResource/get/"
+board_payload = {
+    "options": {
+        "slug": BOARD_SLUG,
+        "username": USERNAME
+    },
     "context": {}
 }
 
+board_resp = session.post(board_url, headers=headers, data={"data": json.dumps(board_payload)})
 board_id = None
+
 try:
-    r = session.post(boards_url, headers=headers, data={"data": json.dumps(boards_payload)})
-    res_data = r.json()
-    boards_list = res_data.get("resource_response", {}).get("data", [])
-    if boards_list:
-        tablero = boards_list[0]
-        board_id = str(tablero.get("id"))
-        print(f"-> Tablero detectado con éxito: '{tablero.get('name')}' (ID: {board_id})")
+    board_json = board_resp.json()
+    board_id = board_json.get("resource_response", {}).get("data", {}).get("id")
+    if board_id:
+        print(f"-> ID de tablero detectado: {board_id}")
     else:
-        print("No se listaron tableros en la respuesta general. Intentando con tablero de respaldo...")
+        print("No se extrajo ID por BoardResource. Respuesta:")
+        print(json.dumps(board_json, indent=2))
 except Exception as e:
-    print(f"Aviso al detectar tableros: {e}")
+    print(f"Error parseando tablero: {e}")
 
 if not board_id:
-    # Si la consulta dinámica no encuentra listas, usamos el fallback
-    board_id = "1024920965106243873"
+    print(f"Respuesta cruda del tablero ({board_resp.status_code}): {board_resp.text[:300]}")
+    exit(1)
 
-# 2. Publicar Pin
-create_url = "https://www.pinterest.com/resource/PinResource/create/"
+# 2. Publicar el Pin en el tablero identificado
+create_url = "https://www.pinterest.es/resource/PinResource/create/"
 payload = {
     "options": {
-        "board_id": board_id,
+        "board_id": str(board_id),
         "image_url": prod["imagen"],
         "title": titular,
         "description": descripcion,
@@ -126,9 +132,9 @@ try:
     if "resource_response" in resp_json and "data" in resp_json["resource_response"]:
         pin_id = resp_json["resource_response"]["data"].get("id")
         print(f"¡ÉXITO TOTAL! Pin publicado con ID: {pin_id}")
-        print(f"Ver Pin en: https://www.pinterest.com/pin/{pin_id}/")
+        print(f"Ver Pin en: https://www.pinterest.es/pin/{pin_id}/")
     else:
-        print("Respuesta devuelta por Pinterest:")
+        print("Respuesta devuelta por Pinterest al publicar:")
         print(json.dumps(resp_json, indent=2))
         exit(1)
 except Exception:
