@@ -2,7 +2,7 @@ import os
 import random
 import json
 import uuid
-import base64
+import re
 import requests
 from bs4 import BeautifulSoup
 from google import genai
@@ -58,7 +58,6 @@ TERMINOS_BUSQUEDA = [
 ]
 
 def obtener_producto_con_oferta():
-    """Busca productos Bestsellers con oferta/descuento activo en Amazon España."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "es-ES,es;q=0.9",
@@ -70,7 +69,6 @@ def obtener_producto_con_oferta():
     
     for query in terminos:
         try:
-            # Filtro de Más Vendidos + Descuentos activos del 10% o más
             url = f"https://www.amazon.es/s?k={requests.utils.quote(query)}&s=exact-aware-popularity-rank&pct-off=10-"
             r = requests.get(url, headers=headers, timeout=10)
             if r.status_code != 200:
@@ -97,22 +95,16 @@ def obtener_producto_con_oferta():
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
                 
-                # Detectar precio / descuento
                 descuento_texto = "¡En Oferta Flash!"
-                
-                # Buscar porcentaje de ahorro (ej: -20%)
                 badge_desc = item.find("span", string=re.compile(r'-\d+%'))
-                if badge_desc:
-                    descuento_texto = f"¡Rebajado un {badge_desc.text.replace('-', '').strip()} de descuento!"
-                
-                # Buscar precio actual
                 precio_elem = item.find("span", {"class": "a-offscreen"})
-                if precio_elem and precio_elem.text:
-                    precio = precio_elem.text.strip()
-                    if badge_desc:
-                        descuento_texto = f"¡Solo {precio} ({badge_desc.text.strip()})!"
-                    else:
-                        descuento_texto = f"¡Solo {precio} en oferta limitada!"
+                
+                if badge_desc and precio_elem and precio_elem.text:
+                    descuento_texto = f"¡Solo {precio_elem.text.strip()} ({badge_desc.text.strip()})!"
+                elif badge_desc:
+                    descuento_texto = f"¡Rebajado un {badge_desc.text.replace('-', '').strip()}!"
+                elif precio_elem and precio_elem.text:
+                    descuento_texto = f"¡Solo {precio_elem.text.strip()} en oferta!"
                 
                 validos.append({
                     "nombre": nombre,
@@ -121,14 +113,12 @@ def obtener_producto_con_oferta():
                     "oferta_info": descuento_texto
                 })
             
-            # Seleccionar entre los 5 más vendidos con descuento de la búsqueda
             if validos:
                 return random.choice(validos[:5])
         except Exception as e:
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    # Fallback con producto superventas garantizado
     return {
         "nombre": "Blink Mini Cámara de seguridad inteligente compacta",
         "asin": "B07X37DT9M",
@@ -136,7 +126,23 @@ def obtener_producto_con_oferta():
         "oferta_info": "¡Oferta especial con descuento por tiempo limitado!"
     }
 
-# 1. Obtener producto y generar enlace con UTM
+def subir_imagen_a_host(url_origen):
+    """Descarga la imagen de Amazon y la sube a un servidor de imágenes libre para que Pinterest la acepte."""
+    try:
+        r_img = requests.get(url_origen, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        if r_img.status_code == 200:
+            resp_tmp = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": ("imagen.jpg", r_img.content, "image/jpeg")}, timeout=10)
+            if resp_tmp.status_code == 200:
+                tmp_url = resp_tmp.json().get("data", {}).get("url", "")
+                # Convertir enlace temporal a enlace directo descargable
+                direct_url = tmp_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                if direct_url.startswith("http"):
+                    return direct_url
+    except Exception as e:
+        print(f"Aviso en subida de imagen temporal: {e}")
+    return url_origen
+
+# 1. Obtener producto y generar enlace de afiliado con parámetros UTM
 prod = obtener_producto_con_oferta()
 tag = AMAZON_TAG.strip() if AMAZON_TAG else "tutienda-21"
 
@@ -155,7 +161,7 @@ print(f"-> ASIN real de Amazon: {prod['asin']}")
 print(f"-> Info de oferta: {prod['oferta_info']}")
 print(f"-> Enlace generado: {link_afiliado}")
 
-# 2. Generar textos persuasivos centrados en la oferta con Gemini
+# 2. Generar textos persuasivos con Gemini 3.6 Flash
 prompt = f"""
 Eres un especialista en ventas y copywriting para Pinterest.
 Crea para el producto '{prod['nombre']}' (que tiene esta oferta: {prod['oferta_info']}):
@@ -183,12 +189,12 @@ try:
             titular = res.split("TITULAR:")[1].split("DESCRIPCION:")[0].strip()
             descripcion = res.split("DESCRIPCION:")[1].strip()
 except Exception as e:
-    print(f"Aviso en llamada Gemini: {e}")
+    print(f"Aviso en llamada Gemini (usando texto base): {e}")
 
 print(f"-> Titular final: {titular}")
 print(f"-> Descripción final: {descripcion}")
 
-# 3. Sesión con Pinterest
+# 3. Sesión con Pinterest y cookies
 csrf_token = CSRF_ENV.strip() if CSRF_ENV else uuid.uuid4().hex
 session = requests.Session()
 
@@ -232,18 +238,15 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Descargar imagen y preparar Base64 / Subida
-img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-img_bytes = requests.get(prod["imagen"], headers=img_headers, timeout=10).content
-img_base64 = base64.b64encode(img_bytes).decode("utf-8")
-image_data_uri = f"data:image/jpeg;base64,{img_base64}"
+# 5. Obtener URL directa pública de imagen
+imagen_final = subir_imagen_a_host(prod["imagen"])
+print(f"-> Imagen procesada para Pinterest: {imagen_final}")
 
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
-
 payload_pin = {
     "options": {
         "board_id": str(board_id),
-        "image_url": image_data_uri,
+        "image_url": imagen_final,
         "title": titular,
         "description": descripcion,
         "link": link_afiliado
@@ -257,37 +260,24 @@ resp = session.post(
     data={"data": json.dumps(payload_pin)}
 )
 
-# Respaldo con subida directa si falla el data URI
-if resp.status_code != 200 or "resource_response" not in resp.json() or not resp.json().get("resource_response", {}).get("data"):
-    files = {"img": ("pin.jpg", img_bytes, "image/jpeg")}
-    up_resp = session.post("https://www.pinterest.es/upload-image/", headers=base_headers, files=files)
-    
-    img_sig = None
-    try:
-        up_json = up_resp.json()
-        img_sig = up_json.get("image_url") or up_json.get("data", {}).get("image_url")
-    except Exception:
-        pass
-    
-    if img_sig:
-        payload_pin["options"]["image_url"] = img_sig
-        resp = session.post(
-            create_url, 
-            headers={**base_headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, 
-            data={"data": json.dumps(payload_pin)}
-        )
-
-# 6. Verificación final
+pin_id = None
 try:
     resp_json = resp.json()
-    if "resource_response" in resp_json and "data" in resp_json["resource_response"] and resp_json["resource_response"]["data"]:
-        pin_id = resp_json["resource_response"]["data"].get("id")
-        print(f"¡ÉXITO TOTAL! Pin publicado con ID: {pin_id}")
-        print(f"Ver Pin en: https://www.pinterest.es/pin/{pin_id}/")
-    else:
-        print("Respuesta de Pinterest:")
-        print(json.dumps(resp_json, indent=2))
-        exit(1)
+    data = resp_json.get("resource_response", {}).get("data")
+    if isinstance(data, dict):
+        pin_id = data.get("id")
+    elif isinstance(resp_json.get("data"), dict):
+        pin_id = resp_json["data"].get("id")
 except Exception:
-    print(f"Respuesta raw ({resp.status_code}): {resp.text[:300]}")
+    pass
+
+if pin_id:
+    print(f"¡ÉXITO TOTAL! Pin publicado con ID: {pin_id}")
+    print(f"Ver Pin en: https://www.pinterest.es/pin/{pin_id}/")
+else:
+    print(f"Error al publicar (Status {resp.status_code}):")
+    try:
+        print(json.dumps(resp.json(), indent=2))
+    except Exception:
+        print(resp.text[:400])
     exit(1)
