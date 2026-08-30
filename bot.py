@@ -4,7 +4,7 @@ import random
 import base64
 import requests
 from PIL import Image, ImageDraw, ImageFont
-import google.generativeai as genai
+from google import genai
 
 # Cargar credenciales desde los secretos de GitHub
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
@@ -12,9 +12,8 @@ PIN_TOKEN = os.environ.get("PINTEREST_TOKEN")
 BOARD_ID = os.environ.get("PINTEREST_BOARD_ID")
 AMAZON_TAG = os.environ.get("AMAZON_TAG")
 
-# Configurar modelo de Gemini
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+# Cliente moderno de Gemini
+client = genai.Client(api_key=GEMINI_KEY)
 
 # Catálogo base de productos
 PRODUCTOS = [
@@ -52,7 +51,11 @@ TITULAR: [tu titular]
 DESCRIPCION: [tu descripcion]
 """
 
-res = model.generate_content(prompt).text
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents=prompt,
+)
+res = response.text
 titular = res.split("TITULAR:")[1].split("DESCRIPCION:")[0].strip()
 descripcion = res.split("DESCRIPCION:")[1].strip()
 
