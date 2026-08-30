@@ -1,0 +1,30 @@
+name: Publicador Automatico Pinterest
+
+on:
+  schedule:
+    # Se ejecuta automáticamente todos los días a las 09:00, 15:00 y 20:00 UTC
+    - cron: '0 9,15,20 * * *'
+  workflow_dispatch: # Permite ejecutarlo manualmente con un botón
+
+jobs:
+  publicar_pin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar dependencias
+        run: pip install requests pillow google-generativeai
+
+      - name: Ejecutar bot
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PINTEREST_TOKEN: ${{ secrets.PINTEREST_TOKEN }}
+          PINTEREST_BOARD_ID: ${{ secrets.PINTEREST_BOARD_ID }}
+          AMAZON_TAG: ${{ secrets.AMAZON_TAG }}
+        run: python bot.py
