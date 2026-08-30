@@ -1,11 +1,11 @@
 import os
 import random
-from datetime import datetime, timezone
-import xml.etree.ElementTree as ET
+import requests
 from google import genai
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 AMAZON_TAG = os.environ.get("AMAZON_TAG")
+AUTH_COOKIE = os.environ.get("PINTEREST_AUTH")
 
 client = genai.Client(api_key=GEMINI_KEY)
 
@@ -31,40 +31,69 @@ PRODUCTOS = [
 prod = random.choice(PRODUCTOS)
 link_afiliado = f"https://www.amazon.es/dp/{prod['asin']}?tag={AMAZON_TAG}"
 
-# Generar textos con IA
+# 1. Generar textos con IA
 prompt = f"""
-Crea para Pinterest sobre el producto '{prod['nombre']}':
-1. Un titular persuasivo (máximo 6 palabras).
-2. Una descripción atractiva para compras con palabras clave (máximo 30 palabras).
-Formato estricto:
+Crea para Pinterest sobre '{prod['nombre']}':
+1. Un titular llamativo (máximo 6 palabras).
+2. Una descripción persuasiva para compra con hashtags (máximo 25 palabras).
+Formato:
 TITULAR: [tu titular]
 DESCRIPCION: [tu descripcion]
 """
 
 response = client.models.generate_content(
-    model="gemini-3.6-flash",
+    model="gemini-2.5-flash",
     contents=prompt,
 )
 res = response.text
 titular = res.split("TITULAR:")[1].split("DESCRIPCION:")[0].strip()
 descripcion = res.split("DESCRIPCION:")[1].strip()
 
-# Estructura RSS XML para Pinterest
-rss = ET.Element("rss", version="2.0")
-channel = ET.SubElement(rss, "channel")
-ET.SubElement(channel, "title").text = "Catalogo Pinterest Afiliados"
-ET.SubElement(channel, "link").text = link_afiliado
-ET.SubElement(channel, "description").text = "Feed de productos recomendados"
+print(f"-> Generando Pin: {titular}")
 
-item = ET.SubElement(channel, "item")
-ET.SubElement(item, "title").text = titular
-ET.SubElement(item, "link").text = link_afiliado
-ET.SubElement(item, "description").text = descripcion
-ET.SubElement(item, "enclosure", url=prod["imagen"], type="image/jpeg", length="1024")
-ET.SubElement(item, "guid").text = f"{prod['asin']}-{int(datetime.now().timestamp())}"
-ET.SubElement(item, "pubDate").text = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+# 2. Configurar sesión de Pinterest con la cookie
+session = requests.Session()
+session.cookies.set("_pinterest_sess", AUTH_COOKIE, domain=".pinterest.com")
+session.cookies.set("_auth", "1", domain=".pinterest.com")
 
-tree = ET.ElementTree(rss)
-ET.indent(tree, space="  ", level=0)
-tree.write("feed.xml", encoding="utf-8", xml_declaration=True)
-print(f"Feed generado con éxito para: {titular}")
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://www.pinterest.es/",
+    "X-Requested-With": "XMLHttpRequest",
+    "Accept": "application/json, text/javascript, */*; q=0.01"
+}
+
+# Obtener tableros del usuario
+boards_url = "https://www.pinterest.com/resource/BoardsResource/get/"
+params = {"source_url": "/", "data": '{"options":{},"context":{}}'}
+
+r = session.get(boards_url, headers=headers, params=params)
+board_id = None
+
+try:
+    boards = r.json().get("resource_response", {}).get("data", [])
+    if boards:
+        board_id = boards[0]["id"]
+        print(f"-> Tablero detectado: {boards[0].get('name')} (ID: {board_id})")
+except Exception as e:
+    print(f"Aviso al detectar tableros: {e}")
+
+# Crear el Pin directamente
+create_url = "https://www.pinterest.com/resource/PinResource/create/"
+post_data = {
+    "options": {
+        "board_id": board_id,
+        "image_url": prod["imagen"],
+        "title": titular,
+        "description": descripcion,
+        "link": link_afiliado
+    },
+    "context": {}
+}
+
+resp = session.post(create_url, headers=headers, data={"data": str(post_data).replace("'", '"')})
+
+if resp.status_code == 200:
+    print("¡Pin publicado con éxito en tu tablero de Pinterest!")
+else:
+    print(f"Respuesta Pinterest ({resp.status_code}): {resp.text[:200]}")
