@@ -4,6 +4,7 @@ import json
 import uuid
 import re
 import time
+import base64
 import requests
 from bs4 import BeautifulSoup
 from google import genai
@@ -63,6 +64,44 @@ def limpiar_precio_a_float(texto):
             return float(val)
         except ValueError:
             return None
+    return None
+
+def alojar_imagen_para_pinterest(img_bytes):
+    """
+    Sube la imagen a un CDN de acceso libre y directo (sin bloqueos anti-bot)
+    para que Pinterest pueda descargarla sin el error 400 ni 403.
+    """
+    # 1. Intento: ImgBB (API pública ultra-fiable para hotlinking de Pinterest)
+    try:
+        b64_image = base64.b64encode(img_bytes).decode("utf-8")
+        r_imgbb = requests.post(
+            "https://api.imgbb.com/1/upload",
+            data={
+                "key": "47be15e197c11867ae6bcebf29871790", # Clave pública de subida directa
+                "image": b64_image
+            },
+            timeout=15
+        )
+        if r_imgbb.status_code == 200:
+            direct_url = r_imgbb.json().get("data", {}).get("image", {}).get("url")
+            if direct_url and direct_url.startswith("http"):
+                return direct_url
+    except Exception as e:
+        print(f"Aviso subida ImgBB: {e}")
+
+    # 2. Intento: Catbox con extensión JPG limpia
+    try:
+        r_catbox = requests.post(
+            "https://catbox.moe/user/api.php",
+            data={"reqtype": "fileupload"},
+            files={"fileToUpload": ("foto.jpg", img_bytes, "image/jpeg")},
+            timeout=15
+        )
+        if r_catbox.status_code == 200 and r_catbox.text.strip().startswith("https://"):
+            return r_catbox.text.strip()
+    except Exception as e:
+        print(f"Aviso subida Catbox: {e}")
+
     return None
 
 def obtener_producto_con_oferta():
@@ -164,11 +203,15 @@ def obtener_producto_con_oferta():
                 if not img_bytes:
                     continue
                 
+                # Alojar en CDN compatible
+                cdn_url = alojar_imagen_para_pinterest(img_bytes)
+                if not cdn_url:
+                    continue
+                
                 return {
                     "nombre": nombre,
                     "asin": asin,
-                    "imagen_bytes": img_bytes,
-                    "imagen_url": img_src,
+                    "imagen_url": cdn_url,
                     "oferta_info": oferta_info
                 }
         except Exception as e:
@@ -176,13 +219,12 @@ def obtener_producto_con_oferta():
             continue
 
     # Fallback garantizado
-    fallback_url = "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
-    fallback_bytes = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
+    fallback_bytes = requests.get("https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg", headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
+    fallback_cdn = alojar_imagen_para_pinterest(fallback_bytes)
     return {
         "nombre": "Blink Mini Cámara de seguridad inteligente compacta para interiores",
         "asin": "B07X37DT9M",
-        "imagen_bytes": fallback_bytes,
-        "imagen_url": fallback_url,
+        "imagen_url": fallback_cdn,
         "oferta_info": "¡Ahora 22,99 €! (Antes 34,99 € | -34%)"
     }
 
@@ -282,48 +324,15 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Subida nativa garantizada a los servidores de Pinterest (i.pinimg.com)
-upload_headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "X-CSRFToken": csrf_token,
-    "X-Requested-With": "XMLHttpRequest",
-    "Referer": "https://www.pinterest.es/pin-builder/"
-}
+# 5. Crear Pin oficial en el tablero usando el CDN directo
+print(f"-> URL de imagen enviada a Pinterest: {prod['imagen_url']}")
 
-# Subir la imagen al endpoint nativo de Pinterest
-files = {
-    "img": ("image.jpg", prod["imagen_bytes"], "image/jpeg")
-}
-
-up_resp = session.post("https://www.pinterest.es/upload-image/", headers=upload_headers, files=files)
-image_signature = None
-
-try:
-    up_json = up_resp.json()
-    image_signature = (
-        up_json.get("image_url")
-        or up_json.get("url")
-        or up_json.get("success")
-        or up_json.get("data", {}).get("image_url")
-        or up_json.get("resource_response", {}).get("data", {}).get("image_url")
-    )
-except Exception:
-    pass
-
-if not image_signature and "i.pinimg.com" in up_resp.text:
-    match = re.search(r'https://i\.pinimg\.com/[^\s"\'<>]+', up_resp.text)
-    if match:
-        image_signature = match.group(0)
-
-print(f"-> URL interna generada en Pinterest: {image_signature}")
-
-# 6. Crear Pin oficial en el tablero
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
 
 payload_pin = {
     "options": {
         "board_id": str(board_id),
-        "image_url": image_signature if image_signature else prod["imagen_url"],
+        "image_url": prod["imagen_url"],
         "title": titular,
         "description": descripcion,
         "link": link_afiliado
