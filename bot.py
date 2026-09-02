@@ -83,7 +83,6 @@ def obtener_precios_reales_desde_ficha(asin, headers_base):
             
             soup = BeautifulSoup(r.text, "html.parser")
             
-            # Contenedor principal de precio en la ficha
             core_price = (
                 soup.find("div", {"id": "corePriceDisplay_desktop_feature_div"})
                 or soup.find("div", {"id": "corePrice_feature_div"})
@@ -174,12 +173,10 @@ def obtener_producto_con_oferta():
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
                 
-                # Consultar la ficha oficial para obtener el precio real sin errores
                 datos_ficha = obtener_precios_reales_desde_ficha(asin, headers)
                 if not datos_ficha:
                     continue
                 
-                # Descarga y verificación de la imagen binaria
                 img_bytes = None
                 img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 for _ in range(2):
@@ -203,7 +200,6 @@ def obtener_producto_con_oferta():
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    # Fallback con producto y precios verificados
     fallback_url = "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
     fallback_bytes = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
     return {
@@ -324,6 +320,7 @@ up_resp = session.post(upload_url, headers=upload_headers, files=files)
 image_signature = None
 
 try:
+    print(f"-> Estado subida imagen: {up_resp.status_code}")
     up_json = up_resp.json()
     if isinstance(up_json, dict):
         image_signature = (
@@ -383,7 +380,5 @@ else:
     try:
         print(json.dumps(resp.json(), indent=2))
     except Exception:
-        print(resp.text[:400])
-    exit(1)
         print(resp.text[:400])
     exit(1)
