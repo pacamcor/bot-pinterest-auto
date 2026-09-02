@@ -54,7 +54,6 @@ TERMINOS_BUSQUEDA = [
 ]
 
 def limpiar_precio_a_float(texto):
-    """Convierte un string como '49,55 €' o '49.55€' a float 49.55"""
     if not texto:
         return None
     match = re.search(r'(\d+[\.,]\d{2})', texto)
@@ -64,6 +63,78 @@ def limpiar_precio_a_float(texto):
             return float(val)
         except ValueError:
             return None
+    return None
+
+def obtener_precios_reales_desde_ficha(asin, headers_base):
+    """Consulta directamente la página del producto para extraer los precios exactos sin desviaciones"""
+    url_dp = f"https://www.amazon.es/dp/{asin}"
+    headers = {
+        **headers_base,
+        "Referer": "https://www.amazon.es/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    }
+    
+    for _ in range(2):
+        try:
+            r = requests.get(url_dp, headers=headers, timeout=10)
+            if r.status_code != 200:
+                time.sleep(1)
+                continue
+            
+            soup = BeautifulSoup(r.text, "html.parser")
+            
+            # Contenedor principal de precio en la ficha
+            core_price = (
+                soup.find("div", {"id": "corePriceDisplay_desktop_feature_div"})
+                or soup.find("div", {"id": "corePrice_feature_div"})
+                or soup.find("div", {"id": "desktop_buybox"})
+            )
+            
+            if not core_price:
+                continue
+            
+            # 1. Extraer Precio Actual exacto en ficha
+            precio_actual_str = ""
+            precio_actual_num = None
+            
+            p_elem = core_price.find("span", {"class": "a-price"})
+            if p_elem:
+                whole = p_elem.find("span", {"class": "a-price-whole"})
+                fraction = p_elem.find("span", {"class": "a-price-fraction"})
+                if whole and fraction:
+                    w_clean = re.sub(r'[^\d]', '', whole.text.strip())
+                    f_clean = re.sub(r'[^\d]', '', fraction.text.strip())
+                    if w_clean and f_clean:
+                        precio_actual_str = f"{w_clean},{f_clean} €"
+                        precio_actual_num = float(f"{w_clean}.{f_clean}")
+                if not precio_actual_num:
+                    off = p_elem.find("span", {"class": "a-offscreen"})
+                    if off and off.text and "€" in off.text and "/" not in off.text:
+                        precio_actual_str = off.text.strip()
+                        precio_actual_num = limpiar_precio_a_float(precio_actual_str)
+            
+            # 2. Extraer Precio Antiguo (PVP Tachado) exacto en ficha
+            precio_antiguo_str = ""
+            precio_antiguo_num = None
+            
+            old_elem = core_price.find("span", {"class": "a-text-price"}) or core_price.find("span", {"data-a-strike": "true"})
+            if old_elem:
+                off_old = old_elem.find("span", {"class": "a-offscreen"})
+                if off_old and off_old.text and "€" in off_old.text:
+                    precio_antiguo_str = off_old.text.strip()
+                    precio_antiguo_num = limpiar_precio_a_float(precio_antiguo_str)
+            
+            if precio_actual_num and precio_antiguo_num and precio_antiguo_num > precio_actual_num:
+                pct = round(((precio_antiguo_num - precio_actual_num) / precio_antiguo_num) * 100)
+                return {
+                    "actual_str": precio_actual_str,
+                    "antiguo_str": precio_antiguo_str,
+                    "info": f"¡Ahora {precio_actual_str}! (Antes {precio_antiguo_str} | -{pct}%)"
+                }
+        except Exception:
+            time.sleep(1)
+            
+        time.sleep(1)
     return None
 
 def obtener_producto_con_oferta():
@@ -103,54 +174,10 @@ def obtener_producto_con_oferta():
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
                 
-                price_box = (
-                    item.find("div", {"class": "puis-price-instructions-style"})
-                    or item.find("div", {"data-cy": "price-recipe"})
-                    or item
-                )
-                
-                # 1. Extraer Precio Actual exacto reconstruyendo parte entera y decimal
-                precio_actual_str = ""
-                precio_actual_num = None
-                
-                for p_elem in price_box.find_all("span", {"class": "a-price"}):
-                    if "a-text-price" in p_elem.get("class", []):
-                        continue
-                    whole = p_elem.find("span", {"class": "a-price-whole"})
-                    fraction = p_elem.find("span", {"class": "a-price-fraction"})
-                    if whole and fraction:
-                        w_clean = re.sub(r'[^\d]', '', whole.text.strip())
-                        f_clean = re.sub(r'[^\d]', '', fraction.text.strip())
-                        if w_clean and f_clean:
-                            precio_actual_str = f"{w_clean},{f_clean} €"
-                            precio_actual_num = float(f"{w_clean}.{f_clean}")
-                            break
-                    else:
-                        off = p_elem.find("span", {"class": "a-offscreen"})
-                        if off and off.text and "€" in off.text and "/" not in off.text:
-                            precio_actual_str = off.text.strip()
-                            precio_actual_num = limpiar_precio_a_float(precio_actual_str)
-                            if precio_actual_num:
-                                break
-                
-                # 2. Extraer Precio Antiguo (PVP Tachado) exacto
-                precio_antiguo_str = ""
-                precio_antiguo_num = None
-                
-                old_elem = price_box.find("span", {"class": "a-text-price"}) or price_box.find("span", {"data-a-strike": "true"})
-                if old_elem:
-                    off_old = old_elem.find("span", {"class": "a-offscreen"})
-                    if off_old and off_old.text and "€" in off_old.text:
-                        precio_antiguo_str = off_old.text.strip()
-                        precio_antiguo_num = limpiar_precio_a_float(precio_antiguo_str)
-                
-                # 3. Comprobación matemática: El precio antiguo DEBE ser mayor que el actual
-                if not (precio_actual_num and precio_antiguo_num and precio_antiguo_num > precio_actual_num):
+                # Consultar la ficha oficial para obtener el precio real sin errores
+                datos_ficha = obtener_precios_reales_desde_ficha(asin, headers)
+                if not datos_ficha:
                     continue
-                
-                # Calcular porcentaje real comprobado
-                pct_calculado = round(((precio_antiguo_num - precio_actual_num) / precio_antiguo_num) * 100)
-                oferta_info = f"¡Ahora {precio_actual_str}! (Antes {precio_antiguo_str} | -{pct_calculado}%)"
                 
                 # Descarga y verificación de la imagen binaria
                 img_bytes = None
@@ -170,13 +197,13 @@ def obtener_producto_con_oferta():
                         "asin": asin,
                         "imagen_bytes": img_bytes,
                         "imagen_url": img_src,
-                        "oferta_info": oferta_info
+                        "oferta_info": datos_ficha["info"]
                     }
         except Exception as e:
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    # Fallback con producto y precios verificados matemáticamente
+    # Fallback con producto y precios verificados
     fallback_url = "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
     fallback_bytes = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
     return {
@@ -297,7 +324,6 @@ up_resp = session.post(upload_url, headers=upload_headers, files=files)
 image_signature = None
 
 try:
-    print(f"-> Estado subida imagen: {up_resp.status_code}")
     up_json = up_resp.json()
     if isinstance(up_json, dict):
         image_signature = (
@@ -357,5 +383,7 @@ else:
     try:
         print(json.dumps(resp.json(), indent=2))
     except Exception:
+        print(resp.text[:400])
+    exit(1)
         print(resp.text[:400])
     exit(1)
