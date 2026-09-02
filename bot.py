@@ -65,34 +65,35 @@ def limpiar_precio_a_float(texto):
             return None
     return None
 
-def subir_a_host_externo(img_bytes):
-    """Aloja la imagen en un CDN libre para que Pinterest la descargue en 0.5s sin bloqueos 403 ni 503"""
-    # Opción 1: Catbox
+def subir_a_host_confiable(img_bytes):
+    """Aloja la imagen en un host estático con cabeceras MIME 100% compatibles con Pinterest"""
+    # 1. Catbox (Alojamiento estático directo sin bloqueos)
     try:
         r = requests.post(
             "https://catbox.moe/user/api.php",
             data={"reqtype": "fileupload"},
-            files={"fileToUpload": ("imagen.jpg", img_bytes, "image/jpeg")},
+            files={"fileToUpload": ("producto.jpg", img_bytes, "image/jpeg")},
             timeout=15
         )
-        if r.status_code == 200 and r.text.strip().startswith("http"):
+        if r.status_code == 200 and r.text.strip().startswith("https://"):
             return r.text.strip()
     except Exception as e:
-        print(f"Aviso en Catbox: {e}")
+        print(f"Aviso subida Catbox: {e}")
 
-    # Opción 2: Freeimage / ImgBB compatible
+    # 2. File.io alternativa directa
     try:
         r2 = requests.post(
-            "https://tmpfiles.org/api/v1/upload",
-            files={"file": ("imagen.jpg", img_bytes, "image/jpeg")},
+            "https://file.io",
+            files={"file": ("producto.jpg", img_bytes, "image/jpeg")},
+            data={"expires": "1d"},
             timeout=15
         )
         if r2.status_code == 200:
-            url_orig = r2.json().get("data", {}).get("url")
-            if url_orig:
-                return url_orig.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+            link = r2.json().get("link")
+            if link:
+                return link
     except Exception as e:
-        print(f"Aviso en Tmpfiles: {e}")
+        print(f"Aviso subida File.io: {e}")
 
     return None
 
@@ -133,14 +134,12 @@ def obtener_producto_con_oferta():
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
                 
-                # Buscar precios en el contenedor oficial de precio de Amazon
                 price_box = (
                     item.find("div", {"class": "puis-price-instructions-style"})
                     or item.find("div", {"data-cy": "price-recipe"})
                     or item
                 )
                 
-                # 1. Extraer Precio Actual exacto
                 precio_actual_str = ""
                 precio_actual_num = None
                 
@@ -164,7 +163,6 @@ def obtener_producto_con_oferta():
                             if precio_actual_num:
                                 break
                 
-                # 2. Extraer Precio Antiguo (Tachado)
                 precio_antiguo_str = ""
                 precio_antiguo_num = None
                 old_tag = price_box.find("span", {"class": "a-text-price"}) or price_box.find("span", {"data-a-strike": "true"})
@@ -174,7 +172,6 @@ def obtener_producto_con_oferta():
                         precio_antiguo_str = off_old.text.strip()
                         precio_antiguo_num = limpiar_precio_a_float(precio_antiguo_str)
                 
-                # Validación de oferta lógica
                 if not precio_actual_num:
                     continue
                 
@@ -184,7 +181,7 @@ def obtener_producto_con_oferta():
                 else:
                     oferta_info = f"¡En oferta por solo {precio_actual_str}!"
                 
-                # Descargar bytes de imagen con reintentos
+                # Descargar bytes limpios de la imagen
                 img_bytes = None
                 img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 for _ in range(2):
@@ -199,8 +196,7 @@ def obtener_producto_con_oferta():
                 if not img_bytes:
                     continue
                 
-                # Subir a host rápido y limpio para Pinterest
-                hosted_url = subir_a_host_externo(img_bytes)
+                hosted_url = subir_a_host_confiable(img_bytes)
                 if not hosted_url:
                     continue
                 
@@ -214,9 +210,8 @@ def obtener_producto_con_oferta():
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    # Si todo falla, usar imagen directa en CDN libre
     backup_bytes = requests.get("https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg", headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
-    backup_hosted = subir_a_host_externo(backup_bytes) or "https://files.catbox.moe/k4382v.jpg"
+    backup_hosted = subir_a_host_confiable(backup_bytes) or "https://files.catbox.moe/k4382v.jpg"
     return {
         "nombre": "Blink Mini Cámara de seguridad inteligente compacta para interiores",
         "asin": "B07X37DT9M",
@@ -243,7 +238,7 @@ print(f"-> ASIN real de Amazon: {prod['asin']}")
 print(f"-> Info de oferta: {prod['oferta_info']}")
 print(f"-> Enlace generado: {link_afiliado}")
 
-# 2. Generar textos persuasivos con Gemini 3.6 Flash
+# 2. Generar textos persuasivos con Gemini
 prompt = f"""
 Eres un especialista en ventas y copywriting para Pinterest.
 Crea para el producto '{prod['nombre']}' (que tiene esta oferta real de Amazon: {prod['oferta_info']}):
@@ -262,7 +257,7 @@ descripcion = f"🚨 {prod['oferta_info']}. {prod['nombre']}. ¡Aprovecha la reb
 try:
     client = genai.Client(api_key=GEMINI_KEY)
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model="gemini-2.5-flash",
         contents=prompt,
     )
     if response and response.text:
@@ -320,7 +315,7 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Crear Pin oficial en el tablero usando la URL pública limpia
+# 5. Publicar Pin oficial en el tablero
 print(f"-> URL de imagen enviada a Pinterest: {prod['imagen_url']}")
 
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
