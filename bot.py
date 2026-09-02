@@ -53,6 +53,19 @@ TERMINOS_BUSQUEDA = [
     "masajeador cervical cuello calor oferta"
 ]
 
+def limpiar_precio_a_float(texto):
+    """Convierte un string como '49,55 €' o '49.55€' a float 49.55"""
+    if not texto:
+        return None
+    match = re.search(r'(\d+[\.,]\d{2})', texto)
+    if match:
+        val = match.group(1).replace('.', '').replace(',', '.')
+        try:
+            return float(val)
+        except ValueError:
+            return None
+    return None
+
 def obtener_producto_con_oferta():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -90,49 +103,56 @@ def obtener_producto_con_oferta():
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
                 
-                # Buscar el contenedor oficial de precio de Amazon
                 price_box = (
                     item.find("div", {"class": "puis-price-instructions-style"})
                     or item.find("div", {"data-cy": "price-recipe"})
                     or item
                 )
                 
-                # 1. Extraer Precio Actual (Oferta Real)
-                precio_actual = ""
-                for p_tag in price_box.find_all("span", {"class": "a-price"}):
-                    if "a-text-price" in p_tag.get("class", []):
+                # 1. Extraer Precio Actual exacto reconstruyendo parte entera y decimal
+                precio_actual_str = ""
+                precio_actual_num = None
+                
+                for p_elem in price_box.find_all("span", {"class": "a-price"}):
+                    if "a-text-price" in p_elem.get("class", []):
                         continue
-                    off = p_tag.find("span", {"class": "a-offscreen"})
-                    if off and off.text and "€" in off.text:
-                        txt = off.text.strip()
-                        if "/" not in txt:
-                            precio_actual = txt
+                    whole = p_elem.find("span", {"class": "a-price-whole"})
+                    fraction = p_elem.find("span", {"class": "a-price-fraction"})
+                    if whole and fraction:
+                        w_clean = re.sub(r'[^\d]', '', whole.text.strip())
+                        f_clean = re.sub(r'[^\d]', '', fraction.text.strip())
+                        if w_clean and f_clean:
+                            precio_actual_str = f"{w_clean},{f_clean} €"
+                            precio_actual_num = float(f"{w_clean}.{f_clean}")
                             break
+                    else:
+                        off = p_elem.find("span", {"class": "a-offscreen"})
+                        if off and off.text and "€" in off.text and "/" not in off.text:
+                            precio_actual_str = off.text.strip()
+                            precio_actual_num = limpiar_precio_a_float(precio_actual_str)
+                            if precio_actual_num:
+                                break
                 
-                # 2. Extraer Precio Antiguo (PVP Tachado)
-                precio_antiguo = ""
-                old_tag = price_box.find("span", {"class": "a-text-price"}) or price_box.find("span", {"data-a-strike": "true"})
-                if old_tag:
-                    off_old = old_tag.find("span", {"class": "a-offscreen"})
+                # 2. Extraer Precio Antiguo (PVP Tachado) exacto
+                precio_antiguo_str = ""
+                precio_antiguo_num = None
+                
+                old_elem = price_box.find("span", {"class": "a-text-price"}) or price_box.find("span", {"data-a-strike": "true"})
+                if old_elem:
+                    off_old = old_elem.find("span", {"class": "a-offscreen"})
                     if off_old and off_old.text and "€" in off_old.text:
-                        precio_antiguo = off_old.text.strip()
+                        precio_antiguo_str = off_old.text.strip()
+                        precio_antiguo_num = limpiar_precio_a_float(precio_antiguo_str)
                 
-                # 3. Extraer Porcentaje de Rebaja
-                badge_desc = item.find("span", string=re.compile(r'-\d+%'))
-                descuento_pct = badge_desc.text.strip() if badge_desc else ""
-                
-                if not precio_actual:
+                # 3. Comprobación matemática: El precio antiguo DEBE ser mayor que el actual
+                if not (precio_actual_num and precio_antiguo_num and precio_antiguo_num > precio_actual_num):
                     continue
                 
-                if precio_actual and precio_antiguo:
-                    if descuento_pct:
-                        oferta_info = f"¡Ahora {precio_actual}! (Antes {precio_antiguo} | {descuento_pct})"
-                    else:
-                        oferta_info = f"¡Ahora {precio_actual}! (Antes {precio_antiguo})"
-                else:
-                    oferta_info = f"¡En oferta por solo {precio_actual}!"
+                # Calcular porcentaje real comprobado
+                pct_calculado = round(((precio_antiguo_num - precio_actual_num) / precio_antiguo_num) * 100)
+                oferta_info = f"¡Ahora {precio_actual_str}! (Antes {precio_antiguo_str} | -{pct_calculado}%)"
                 
-                # Descarga y verificación de la imagen binaria real
+                # Descarga y verificación de la imagen binaria
                 img_bytes = None
                 img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 for _ in range(2):
@@ -156,7 +176,7 @@ def obtener_producto_con_oferta():
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    # Fallback con producto real verificado
+    # Fallback con producto y precios verificados matemáticamente
     fallback_url = "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
     fallback_bytes = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
     return {
@@ -293,7 +313,6 @@ except Exception:
         if match:
             image_signature = match.group(0)
 
-# Si Pinterest devolvió booleano o string no-URL, usar la URL original de Amazon
 if not image_signature or not str(image_signature).startswith("http"):
     image_signature = prod["imagen_url"]
 
