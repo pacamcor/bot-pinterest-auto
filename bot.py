@@ -65,38 +65,6 @@ def limpiar_precio_a_float(texto):
             return None
     return None
 
-def subir_a_host_confiable(img_bytes):
-    """Aloja la imagen en un host estático con cabeceras MIME 100% compatibles con Pinterest"""
-    # 1. Catbox (Alojamiento estático directo sin bloqueos)
-    try:
-        r = requests.post(
-            "https://catbox.moe/user/api.php",
-            data={"reqtype": "fileupload"},
-            files={"fileToUpload": ("producto.jpg", img_bytes, "image/jpeg")},
-            timeout=15
-        )
-        if r.status_code == 200 and r.text.strip().startswith("https://"):
-            return r.text.strip()
-    except Exception as e:
-        print(f"Aviso subida Catbox: {e}")
-
-    # 2. File.io alternativa directa
-    try:
-        r2 = requests.post(
-            "https://file.io",
-            files={"file": ("producto.jpg", img_bytes, "image/jpeg")},
-            data={"expires": "1d"},
-            timeout=15
-        )
-        if r2.status_code == 200:
-            link = r2.json().get("link")
-            if link:
-                return link
-    except Exception as e:
-        print(f"Aviso subida File.io: {e}")
-
-    return None
-
 def obtener_producto_con_oferta():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -181,7 +149,7 @@ def obtener_producto_con_oferta():
                 else:
                     oferta_info = f"¡En oferta por solo {precio_actual_str}!"
                 
-                # Descargar bytes limpios de la imagen
+                # Descargar bytes de la imagen
                 img_bytes = None
                 img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 for _ in range(2):
@@ -196,26 +164,25 @@ def obtener_producto_con_oferta():
                 if not img_bytes:
                     continue
                 
-                hosted_url = subir_a_host_confiable(img_bytes)
-                if not hosted_url:
-                    continue
-                
                 return {
                     "nombre": nombre,
                     "asin": asin,
-                    "imagen_url": hosted_url,
+                    "imagen_bytes": img_bytes,
+                    "imagen_url": img_src,
                     "oferta_info": oferta_info
                 }
         except Exception as e:
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    backup_bytes = requests.get("https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg", headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
-    backup_hosted = subir_a_host_confiable(backup_bytes) or "https://files.catbox.moe/k4382v.jpg"
+    # Fallback garantizado
+    fallback_url = "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
+    fallback_bytes = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
     return {
         "nombre": "Blink Mini Cámara de seguridad inteligente compacta para interiores",
         "asin": "B07X37DT9M",
-        "imagen_url": backup_hosted,
+        "imagen_bytes": fallback_bytes,
+        "imagen_url": fallback_url,
         "oferta_info": "¡Ahora 22,99 €! (Antes 34,99 € | -34%)"
     }
 
@@ -238,7 +205,7 @@ print(f"-> ASIN real de Amazon: {prod['asin']}")
 print(f"-> Info de oferta: {prod['oferta_info']}")
 print(f"-> Enlace generado: {link_afiliado}")
 
-# 2. Generar textos persuasivos con Gemini
+# 2. Generar textos persuasivos con Gemini 3.6 Flash
 prompt = f"""
 Eres un especialista en ventas y copywriting para Pinterest.
 Crea para el producto '{prod['nombre']}' (que tiene esta oferta real de Amazon: {prod['oferta_info']}):
@@ -257,7 +224,7 @@ descripcion = f"🚨 {prod['oferta_info']}. {prod['nombre']}. ¡Aprovecha la reb
 try:
     client = genai.Client(api_key=GEMINI_KEY)
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.6-flash",
         contents=prompt,
     )
     if response and response.text:
@@ -315,15 +282,48 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Publicar Pin oficial en el tablero
-print(f"-> URL de imagen enviada a Pinterest: {prod['imagen_url']}")
+# 5. Subida nativa garantizada a los servidores de Pinterest (i.pinimg.com)
+upload_headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "X-CSRFToken": csrf_token,
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": "https://www.pinterest.es/pin-builder/"
+}
 
+# Subir la imagen al endpoint nativo de Pinterest
+files = {
+    "img": ("image.jpg", prod["imagen_bytes"], "image/jpeg")
+}
+
+up_resp = session.post("https://www.pinterest.es/upload-image/", headers=upload_headers, files=files)
+image_signature = None
+
+try:
+    up_json = up_resp.json()
+    image_signature = (
+        up_json.get("image_url")
+        or up_json.get("url")
+        or up_json.get("success")
+        or up_json.get("data", {}).get("image_url")
+        or up_json.get("resource_response", {}).get("data", {}).get("image_url")
+    )
+except Exception:
+    pass
+
+if not image_signature and "i.pinimg.com" in up_resp.text:
+    match = re.search(r'https://i\.pinimg\.com/[^\s"\'<>]+', up_resp.text)
+    if match:
+        image_signature = match.group(0)
+
+print(f"-> URL interna generada en Pinterest: {image_signature}")
+
+# 6. Crear Pin oficial en el tablero
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
 
 payload_pin = {
     "options": {
         "board_id": str(board_id),
-        "image_url": prod["imagen_url"],
+        "image_url": image_signature if image_signature else prod["imagen_url"],
         "title": titular,
         "description": descripcion,
         "link": link_afiliado
