@@ -65,11 +65,60 @@ def limpiar_precio_a_float(texto):
             return None
     return None
 
+def extraer_precios_exactos_compra_unica(soup):
+    """
+    Extrae el precio de compra única normal (descartando suscripciones y precios unitarios)
+    y el PVP original tachado oficial.
+    """
+    # 1. Buscar en el contenedor de precio principal de venta
+    contenedor = (
+        soup.find("div", {"id": "corePriceDisplay_desktop_feature_div"})
+        or soup.find("div", {"id": "corePrice_feature_div"})
+        or soup.find("div", {"id": "oneTimeBuyBox"})
+        or soup.find("div", {"id": "desktop_buybox"})
+    )
+    
+    if not contenedor:
+        return None, None
+
+    precio_actual_str = ""
+    precio_antiguo_str = ""
+
+    # Precio actual: descartar explícitamente clases de precio tachado y suscripciones
+    p_actual_elem = contenedor.find("span", {"class": "priceToPay"}) or contenedor.find("span", {"class": "a-price"})
+    if p_actual_elem:
+        off = p_actual_elem.find("span", {"class": "a-offscreen"})
+        if off and off.text and "€" in off.text and "/" not in off.text:
+            precio_actual_str = off.text.strip()
+
+    # Precio antiguo: buscar específicamente el bloque de PVP / Precio anterior tachado
+    p_antiguo_elem = (
+        contenedor.find("span", {"class": "a-text-price"})
+        or contenedor.find("span", {"data-a-strike": "true"})
+        or contenedor.find("span", {"class": "basisPrice"})
+    )
+    if p_antiguo_elem:
+        off_old = p_antiguo_elem.find("span", {"class": "a-offscreen"})
+        if off_old and off_old.text and "€" in off_old.text:
+            precio_antiguo_str = off_old.text.strip()
+
+    p_act_num = limpiar_precio_a_float(precio_actual_str)
+    p_ant_num = limpiar_precio_a_float(precio_antiguo_str)
+
+    if p_act_num and p_ant_num and p_ant_num > p_act_num:
+        pct = round(((p_ant_num - p_act_num) / p_ant_num) * 100)
+        return precio_actual_str, f"¡Ahora {precio_actual_str}! (Antes {precio_antiguo_str} | -{pct}%)"
+    elif p_act_num:
+        return precio_actual_str, f"¡En oferta por solo {precio_actual_str}!"
+
+    return None, None
+
 def obtener_producto_con_oferta():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "es-ES,es;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Referer": "https://www.amazon.es/"
     }
     
     terminos = list(TERMINOS_BUSQUEDA)
@@ -101,55 +150,59 @@ def obtener_producto_con_oferta():
                 
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
-                
-                price_box = (
-                    item.find("div", {"class": "puis-price-instructions-style"})
-                    or item.find("div", {"data-cy": "price-recipe"})
-                    or item
-                )
-                
-                precio_actual_str = ""
-                precio_actual_num = None
-                
-                for p_tag in price_box.find_all("span", {"class": "a-price"}):
-                    if "a-text-price" in p_tag.get("class", []):
-                        continue
-                    whole = p_tag.find("span", {"class": "a-price-whole"})
-                    fraction = p_tag.find("span", {"class": "a-price-fraction"})
-                    if whole and fraction:
-                        w_clean = re.sub(r'[^\d]', '', whole.text.strip())
-                        f_clean = re.sub(r'[^\d]', '', fraction.text.strip())
-                        if w_clean and f_clean:
-                            precio_actual_str = f"{w_clean},{f_clean} €"
-                            precio_actual_num = float(f"{w_clean}.{f_clean}")
-                            break
+
+                # Consultar directamente la ficha del producto (/dp/) para asegurar el precio exacto
+                dp_url = f"https://www.amazon.es/dp/{asin}"
+                try:
+                    r_dp = requests.get(dp_url, headers=headers, timeout=10)
+                    if r_dp.status_code == 200:
+                        soup_dp = BeautifulSoup(r_dp.text, "html.parser")
+                        precio_real, oferta_info = extraer_precios_exactos_compra_unica(soup_dp)
                     else:
-                        off = p_tag.find("span", {"class": "a-offscreen"})
+                        precio_real, oferta_info = None, None
+                except Exception:
+                    precio_real, oferta_info = None, None
+
+                # Si no pudo entrar a la ficha, extraer de la tarjeta descartando suscripciones
+                if not oferta_info:
+                    price_box = (
+                        item.find("div", {"class": "puis-price-instructions-style"})
+                        or item.find("div", {"data-cy": "price-recipe"})
+                        or item
+                    )
+                    
+                    # Evitar bloques de "Suscríbete y ahorra"
+                    sns_badge = price_box.find(string=re.compile(r'suscríbete', re.I))
+                    if sns_badge:
+                        continue
+                    
+                    p_elem = price_box.find("span", {"class": "priceToPay"}) or price_box.find("span", {"class": "a-price"})
+                    old_elem = price_box.find("span", {"class": "a-text-price"}) or price_box.find("span", {"data-a-strike": "true"})
+                    
+                    p_act = ""
+                    if p_elem:
+                        off = p_elem.find("span", {"class": "a-offscreen"})
                         if off and off.text and "€" in off.text and "/" not in off.text:
-                            precio_actual_str = off.text.strip()
-                            precio_actual_num = limpiar_precio_a_float(precio_actual_str)
-                            if precio_actual_num:
-                                break
-                
-                precio_antiguo_str = ""
-                precio_antiguo_num = None
-                old_tag = price_box.find("span", {"class": "a-text-price"}) or price_box.find("span", {"data-a-strike": "true"})
-                if old_tag:
-                    off_old = old_tag.find("span", {"class": "a-offscreen"})
-                    if off_old and off_old.text and "€" in off_old.text:
-                        precio_antiguo_str = off_old.text.strip()
-                        precio_antiguo_num = limpiar_precio_a_float(precio_antiguo_str)
-                
-                if not precio_actual_num:
-                    continue
-                
-                if precio_antiguo_num and precio_antiguo_num > precio_actual_num:
-                    pct = round(((precio_antiguo_num - precio_actual_num) / precio_antiguo_num) * 100)
-                    oferta_info = f"¡Ahora {precio_actual_str}! (Antes {precio_antiguo_str} | -{pct}%)"
-                else:
-                    oferta_info = f"¡En oferta por solo {precio_actual_str}!"
-                
-                # Descargar bytes de la imagen
+                            p_act = off.text.strip()
+                            
+                    p_old = ""
+                    if old_elem:
+                        off_old = old_elem.find("span", {"class": "a-offscreen"})
+                        if off_old and off_old.text and "€" in off_old.text:
+                            p_old = off_old.text.strip()
+                            
+                    act_num = limpiar_precio_a_float(p_act)
+                    old_num = limpiar_precio_a_float(p_old)
+                    
+                    if act_num and old_num and old_num > act_num:
+                        pct = round(((old_num - act_num) / old_num) * 100)
+                        oferta_info = f"¡Ahora {p_act}! (Antes {p_old} | -{pct}%)"
+                    elif act_num:
+                        oferta_info = f"¡En oferta por solo {p_act}!"
+                    else:
+                        continue
+
+                # Descargar imagen
                 img_bytes = None
                 img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 for _ in range(2):
@@ -303,7 +356,6 @@ upload_resp = session.post(
 image_url_final = None
 
 try:
-    print(f"-> Respuesta subida Pinterest (Status {upload_resp.status_code}): {upload_resp.text[:200]}")
     up_data = upload_resp.json()
     image_url_final = (
         up_data.get("image_url") 
