@@ -65,82 +65,42 @@ def limpiar_precio_a_float(texto):
             return None
     return None
 
-def obtener_precios_reales_desde_ficha(asin, headers_base):
-    """Consulta directamente la página del producto para extraer los precios exactos sin desviaciones"""
-    url_dp = f"https://www.amazon.es/dp/{asin}"
-    headers = {
-        **headers_base,
-        "Referer": "https://www.amazon.es/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-    }
-    
-    for _ in range(2):
-        try:
-            r = requests.get(url_dp, headers=headers, timeout=10)
-            if r.status_code != 200:
-                time.sleep(1)
-                continue
-            
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            core_price = (
-                soup.find("div", {"id": "corePriceDisplay_desktop_feature_div"})
-                or soup.find("div", {"id": "corePrice_feature_div"})
-                or soup.find("div", {"id": "desktop_buybox"})
-            )
-            
-            if not core_price:
-                continue
-            
-            # 1. Extraer Precio Actual exacto en ficha
-            precio_actual_str = ""
-            precio_actual_num = None
-            
-            p_elem = core_price.find("span", {"class": "a-price"})
-            if p_elem:
-                whole = p_elem.find("span", {"class": "a-price-whole"})
-                fraction = p_elem.find("span", {"class": "a-price-fraction"})
-                if whole and fraction:
-                    w_clean = re.sub(r'[^\d]', '', whole.text.strip())
-                    f_clean = re.sub(r'[^\d]', '', fraction.text.strip())
-                    if w_clean and f_clean:
-                        precio_actual_str = f"{w_clean},{f_clean} €"
-                        precio_actual_num = float(f"{w_clean}.{f_clean}")
-                if not precio_actual_num:
-                    off = p_elem.find("span", {"class": "a-offscreen"})
-                    if off and off.text and "€" in off.text and "/" not in off.text:
-                        precio_actual_str = off.text.strip()
-                        precio_actual_num = limpiar_precio_a_float(precio_actual_str)
-            
-            # 2. Extraer Precio Antiguo (PVP Tachado) exacto en ficha
-            precio_antiguo_str = ""
-            precio_antiguo_num = None
-            
-            old_elem = core_price.find("span", {"class": "a-text-price"}) or core_price.find("span", {"data-a-strike": "true"})
-            if old_elem:
-                off_old = old_elem.find("span", {"class": "a-offscreen"})
-                if off_old and off_old.text and "€" in off_old.text:
-                    precio_antiguo_str = off_old.text.strip()
-                    precio_antiguo_num = limpiar_precio_a_float(precio_antiguo_str)
-            
-            if precio_actual_num and precio_antiguo_num and precio_antiguo_num > precio_actual_num:
-                pct = round(((precio_antiguo_num - precio_actual_num) / precio_antiguo_num) * 100)
-                return {
-                    "actual_str": precio_actual_str,
-                    "antiguo_str": precio_antiguo_str,
-                    "info": f"¡Ahora {precio_actual_str}! (Antes {precio_antiguo_str} | -{pct}%)"
-                }
-        except Exception:
-            time.sleep(1)
-            
-        time.sleep(1)
+def subir_a_host_externo(img_bytes):
+    """Aloja la imagen en un CDN libre para que Pinterest la descargue en 0.5s sin bloqueos 403 ni 503"""
+    # Opción 1: Catbox
+    try:
+        r = requests.post(
+            "https://catbox.moe/user/api.php",
+            data={"reqtype": "fileupload"},
+            files={"fileToUpload": ("imagen.jpg", img_bytes, "image/jpeg")},
+            timeout=15
+        )
+        if r.status_code == 200 and r.text.strip().startswith("http"):
+            return r.text.strip()
+    except Exception as e:
+        print(f"Aviso en Catbox: {e}")
+
+    # Opción 2: Freeimage / ImgBB compatible
+    try:
+        r2 = requests.post(
+            "https://tmpfiles.org/api/v1/upload",
+            files={"file": ("imagen.jpg", img_bytes, "image/jpeg")},
+            timeout=15
+        )
+        if r2.status_code == 200:
+            url_orig = r2.json().get("data", {}).get("url")
+            if url_orig:
+                return url_orig.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+    except Exception as e:
+        print(f"Aviso en Tmpfiles: {e}")
+
     return None
 
 def obtener_producto_con_oferta():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "es-ES,es;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
     }
     
     terminos = list(TERMINOS_BUSQUEDA)
@@ -173,10 +133,58 @@ def obtener_producto_con_oferta():
                 if not img_src or "m.media-amazon.com" not in img_src:
                     continue
                 
-                datos_ficha = obtener_precios_reales_desde_ficha(asin, headers)
-                if not datos_ficha:
+                # Buscar precios en el contenedor oficial de precio de Amazon
+                price_box = (
+                    item.find("div", {"class": "puis-price-instructions-style"})
+                    or item.find("div", {"data-cy": "price-recipe"})
+                    or item
+                )
+                
+                # 1. Extraer Precio Actual exacto
+                precio_actual_str = ""
+                precio_actual_num = None
+                
+                for p_tag in price_box.find_all("span", {"class": "a-price"}):
+                    if "a-text-price" in p_tag.get("class", []):
+                        continue
+                    whole = p_tag.find("span", {"class": "a-price-whole"})
+                    fraction = p_tag.find("span", {"class": "a-price-fraction"})
+                    if whole and fraction:
+                        w_clean = re.sub(r'[^\d]', '', whole.text.strip())
+                        f_clean = re.sub(r'[^\d]', '', fraction.text.strip())
+                        if w_clean and f_clean:
+                            precio_actual_str = f"{w_clean},{f_clean} €"
+                            precio_actual_num = float(f"{w_clean}.{f_clean}")
+                            break
+                    else:
+                        off = p_tag.find("span", {"class": "a-offscreen"})
+                        if off and off.text and "€" in off.text and "/" not in off.text:
+                            precio_actual_str = off.text.strip()
+                            precio_actual_num = limpiar_precio_a_float(precio_actual_str)
+                            if precio_actual_num:
+                                break
+                
+                # 2. Extraer Precio Antiguo (Tachado)
+                precio_antiguo_str = ""
+                precio_antiguo_num = None
+                old_tag = price_box.find("span", {"class": "a-text-price"}) or price_box.find("span", {"data-a-strike": "true"})
+                if old_tag:
+                    off_old = old_tag.find("span", {"class": "a-offscreen"})
+                    if off_old and off_old.text and "€" in off_old.text:
+                        precio_antiguo_str = off_old.text.strip()
+                        precio_antiguo_num = limpiar_precio_a_float(precio_antiguo_str)
+                
+                # Validación de oferta lógica
+                if not precio_actual_num:
                     continue
                 
+                if precio_antiguo_num and precio_antiguo_num > precio_actual_num:
+                    pct = round(((precio_antiguo_num - precio_actual_num) / precio_antiguo_num) * 100)
+                    oferta_info = f"¡Ahora {precio_actual_str}! (Antes {precio_antiguo_str} | -{pct}%)"
+                else:
+                    oferta_info = f"¡En oferta por solo {precio_actual_str}!"
+                
+                # Descargar bytes de imagen con reintentos
                 img_bytes = None
                 img_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 for _ in range(2):
@@ -188,25 +196,31 @@ def obtener_producto_con_oferta():
                     except Exception:
                         time.sleep(1)
                 
-                if img_bytes:
-                    return {
-                        "nombre": nombre,
-                        "asin": asin,
-                        "imagen_bytes": img_bytes,
-                        "imagen_url": img_src,
-                        "oferta_info": datos_ficha["info"]
-                    }
+                if not img_bytes:
+                    continue
+                
+                # Subir a host rápido y limpio para Pinterest
+                hosted_url = subir_a_host_externo(img_bytes)
+                if not hosted_url:
+                    continue
+                
+                return {
+                    "nombre": nombre,
+                    "asin": asin,
+                    "imagen_url": hosted_url,
+                    "oferta_info": oferta_info
+                }
         except Exception as e:
             print(f"Aviso buscando en Amazon ({query}): {e}")
             continue
 
-    fallback_url = "https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg"
-    fallback_bytes = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
+    # Si todo falla, usar imagen directa en CDN libre
+    backup_bytes = requests.get("https://m.media-amazon.com/images/I/61pB50c3HRL._AC_SL1000_.jpg", headers={"User-Agent": "Mozilla/5.0"}, timeout=12).content
+    backup_hosted = subir_a_host_externo(backup_bytes) or "https://files.catbox.moe/k4382v.jpg"
     return {
         "nombre": "Blink Mini Cámara de seguridad inteligente compacta para interiores",
         "asin": "B07X37DT9M",
-        "imagen_bytes": fallback_bytes,
-        "imagen_url": fallback_url,
+        "imagen_url": backup_hosted,
         "oferta_info": "¡Ahora 22,99 €! (Antes 34,99 € | -34%)"
     }
 
@@ -273,7 +287,7 @@ for d in dominios:
     session.cookies.set("csrftoken", csrf_token, domain=d)
 
 base_headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Referer": f"https://www.pinterest.es/{USERNAME}/{BOARD_SLUG}/",
     "Origin": "https://www.pinterest.es",
     "X-CSRFToken": csrf_token,
@@ -306,48 +320,15 @@ except Exception as e:
 if not board_id:
     board_id = "1024920896388540341"
 
-# 5. Subida nativa binaria de la imagen a Pinterest
-upload_url = "https://www.pinterest.es/upload-image/"
-files = {"img": ("image.jpg", prod["imagen_bytes"], "image/jpeg")}
-upload_headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "X-CSRFToken": csrf_token,
-    "X-Requested-With": "XMLHttpRequest",
-    "Referer": "https://www.pinterest.es/pin-builder/"
-}
+# 5. Crear Pin oficial en el tablero usando la URL pública limpia
+print(f"-> URL de imagen enviada a Pinterest: {prod['imagen_url']}")
 
-up_resp = session.post(upload_url, headers=upload_headers, files=files)
-image_signature = None
-
-try:
-    print(f"-> Estado subida imagen: {up_resp.status_code}")
-    up_json = up_resp.json()
-    if isinstance(up_json, dict):
-        image_signature = (
-            up_json.get("image_url")
-            or up_json.get("success")
-            or up_json.get("url")
-            or up_json.get("data", {}).get("image_url")
-            or up_json.get("resource_response", {}).get("data", {}).get("image_url")
-        )
-except Exception:
-    if "i.pinimg.com" in up_resp.text:
-        match = re.search(r'https://i\.pinimg\.com/[^\s"\'<>]+', up_resp.text)
-        if match:
-            image_signature = match.group(0)
-
-if not image_signature or not str(image_signature).startswith("http"):
-    image_signature = prod["imagen_url"]
-
-print(f"-> URL de imagen final para el Pin: {image_signature}")
-
-# 6. Crear Pin oficial en el tablero
 create_url = "https://www.pinterest.es/resource/PinResource/create/"
 
 payload_pin = {
     "options": {
         "board_id": str(board_id),
-        "image_url": image_signature,
+        "image_url": prod["imagen_url"],
         "title": titular,
         "description": descripcion,
         "link": link_afiliado
